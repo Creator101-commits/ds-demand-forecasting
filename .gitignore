@@ -1,0 +1,30 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Outputs and generated artifacts
+data/processed/
+data/predictions/
+outputs/checkpoints/
+outputs/metrics/
+outputs/figures/
+outputs/reports/
+kaggle_uploads/
+
+# Raw datasets (large files)
+archive/
+m5-forecasting-accuracy/
+
+# OS/editor
+.DS_Store
+.vscode/settings.json
