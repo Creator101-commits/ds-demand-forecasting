@@ -26,7 +26,15 @@ def build_paths(config: dict[str, Any], root: str | Path | None = None) -> Proje
     prediction_dir = root_path / path_cfg["prediction_dir"]
     output_dir = root_path / path_cfg["output_dir"]
 
-    for p in (processed_dir, prediction_dir, output_dir):
+    for p in (
+        processed_dir,
+        prediction_dir,
+        output_dir,
+        output_dir / "metrics",
+        output_dir / "checkpoints",
+        output_dir / "figures",
+        output_dir / "reports",
+    ):
         p.mkdir(parents=True, exist_ok=True)
 
     return ProjectPaths(

@@ -58,6 +58,7 @@ def run(config_path: str = "config/config.yaml") -> pd.DataFrame:
         summary["savings_vs_sarima"] = 0.0
 
     out_path = paths.root / "outputs" / "metrics" / "business_impact.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(out_path, index=False)
     logger.info("Saved business impact summary to %s", out_path)
     return summary

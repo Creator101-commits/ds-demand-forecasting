@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import lightgbm as lgb
 
@@ -86,6 +87,8 @@ def train_and_predict(config_path: str = "config/config.yaml") -> pd.DataFrame:
 
     val_pred = booster.predict(X_val, num_iteration=booster.best_iteration)
     test_pred = booster.predict(X_test, num_iteration=booster.best_iteration)
+    val_pred = np.asarray(val_pred, dtype=float)
+    test_pred = np.asarray(test_pred, dtype=float)
 
     val_out = val_keys.copy()
     val_out["prediction"] = val_pred
@@ -100,13 +103,16 @@ def train_and_predict(config_path: str = "config/config.yaml") -> pd.DataFrame:
     pred_df.to_parquet(out_path, index=False)
 
     model_path = paths.root / "outputs" / "checkpoints" / "lightgbm_model.txt"
+    model_path.parent.mkdir(parents=True, exist_ok=True)
     booster.save_model(str(model_path))
 
     imp = pd.DataFrame({
         "feature": X_train.columns,
         "importance": booster.feature_importance(importance_type="gain"),
     }).sort_values("importance", ascending=False)
-    imp.to_csv(paths.root / "outputs" / "metrics" / "lightgbm_feature_importance.csv", index=False)
+    imp_path = paths.root / "outputs" / "metrics" / "lightgbm_feature_importance.csv"
+    imp_path.parent.mkdir(parents=True, exist_ok=True)
+    imp.to_csv(imp_path, index=False)
 
     logger.info("Saved LightGBM predictions: %s", out_path)
     return pred_df

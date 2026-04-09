@@ -54,7 +54,9 @@ def run(config_path: str = "config/config.yaml") -> pd.DataFrame:
     rows: list[dict[str, float | str]] = []
 
     for (model_name, split_name), g in pred_df.groupby(["model", "split"], sort=False):
-        if split_name not in {"val", "test"}:
+        model_name_str = str(model_name)
+        split_name_str = str(split_name)
+        if split_name_str not in {"val", "test"}:
             continue
 
         related_train = full_df[
@@ -65,13 +67,14 @@ def run(config_path: str = "config/config.yaml") -> pd.DataFrame:
         if related_train.empty:
             related_train = full_df[full_df["split"] == "train"]
 
-        row = _compute_metric_row(g, related_train, split_name)
-        row["model"] = model_name
+        row = _compute_metric_row(g, related_train, split_name_str)
+        row["model"] = model_name_str
         rows.append(row)
 
     metrics_df = pd.DataFrame(rows).sort_values(["split", "smape", "rmse"])
 
     out_path = paths.root / "outputs" / "metrics" / "model_comparison.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_df.to_csv(out_path, index=False)
     logger.info("Saved model comparison metrics to %s", out_path)
 
