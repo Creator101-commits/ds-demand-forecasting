@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 
 from src.utils.config import load_config
@@ -24,6 +26,9 @@ def train_and_predict(config_path: str = "config/config.yaml") -> pd.DataFrame:
     paths = build_paths(config)
 
     regressors: list[str] = config["models"]["prophet"].get("regressors", [])
+    yearly = cast(Any, bool(config["models"]["prophet"]["yearly_seasonality"]))
+    weekly = cast(Any, bool(config["models"]["prophet"]["weekly_seasonality"]))
+    daily = cast(Any, False)
 
     data_path = paths.processed_dir / "modeling_with_splits.parquet"
     df = pd.read_parquet(data_path)
@@ -45,9 +50,9 @@ def train_and_predict(config_path: str = "config/config.yaml") -> pd.DataFrame:
         )
 
         model = Prophet(
-            yearly_seasonality=bool(config["models"]["prophet"]["yearly_seasonality"]),
-            weekly_seasonality=bool(config["models"]["prophet"]["weekly_seasonality"]),
-            daily_seasonality=False,
+            yearly_seasonality=yearly,
+            weekly_seasonality=weekly,
+            daily_seasonality=daily,
         )
 
         active_regs = [c for c in regressors if c in train_df.columns]
@@ -63,9 +68,9 @@ def train_and_predict(config_path: str = "config/config.yaml") -> pd.DataFrame:
         train_val_df = train_val_df[["date", "sales"] + active_regs].rename(columns={"date": "ds", "sales": "y"})
 
         model_tv = Prophet(
-            yearly_seasonality=bool(config["models"]["prophet"]["yearly_seasonality"]),
-            weekly_seasonality=bool(config["models"]["prophet"]["weekly_seasonality"]),
-            daily_seasonality=False,
+            yearly_seasonality=yearly,
+            weekly_seasonality=weekly,
+            daily_seasonality=daily,
         )
         for reg in active_regs:
             model_tv.add_regressor(reg)

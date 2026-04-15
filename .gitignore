@@ -20,6 +20,8 @@ outputs/metrics/
 outputs/figures/
 outputs/reports/
 kaggle_uploads/
+outputs_bundle/
+outputs_bundle.zip
 
 # Raw datasets (large files)
 archive/
