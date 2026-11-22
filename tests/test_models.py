@@ -160,6 +160,8 @@ def test_build_xy_labels_and_shape() -> None:
 
 def test_build_xy_no_future_leakage() -> None:
     """Randomizing panel[:, o+1:] must not change any feature at o."""
+    import dataclasses
+
     data = _m5_data()
     ctx = _ctx(data)
     origin = np.array([130])
@@ -170,6 +172,13 @@ def test_build_xy_no_future_leakage() -> None:
     corrupted[:, 131:] = rng.integers(0, 9, size=corrupted[:, 131:].shape)
     X2, _ = build_xy(corrupted, ctx, data, origin, 28)
     np.testing.assert_array_equal(X1, X2)
+
+    # FeatureContext itself must be causal: rebuild it on the corrupted
+    # panel (last_nz and friends) and the features must still match.
+    data_c = dataclasses.replace(data, panel=corrupted)
+    ctx_c = _ctx(data_c)
+    X3, _ = build_xy(corrupted, ctx_c, data_c, origin, 28)
+    np.testing.assert_array_equal(X1, X3)
 
     # Sanity: labels DO see the future, so y must differ.
     _, y1 = build_xy(data.panel, ctx, data, origin, 28)
