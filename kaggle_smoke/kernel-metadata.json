@@ -1,0 +1,16 @@
+{
+  "id": "sreeharshak101/ds-demand-forecasting-smoke",
+  "title": "DS Demand Forecasting Smoke",
+  "code_file": "run_kaggle.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "false",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "dataset_sources": [
+    "sreeharshak101/ds-demand-forecasting-src"
+  ],
+  "competition_sources": ["m5-forecasting-accuracy"],
+  "kernel_sources": []
+}
