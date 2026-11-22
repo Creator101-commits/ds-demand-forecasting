@@ -1,11 +1,15 @@
-"""Frozen-plan M5 benchmark orchestration.
+"""Frozen-plan M5 benchmark orchestration (protocol m5-benchmark-v2).
 
-Protocol: train <= d_1885, validation d_1886..d_1913, test d_1914..d_1941.
-Baselines forecast both origins; the LightGBM grid is chosen by
-validation WRMSSE then refit on train+val origins for test at seeds
-0,1,2; SARIMA and Prophet run on the 14 level 1-3 series; inventory is a
-labeled scenario analysis. The plan JSON (card_write_epoch) is persisted
-before the first test-window metric computation.
+Train d_1..d_1913, validation d_1914..d_1941 (origin d_1913), test
+d_1942..d_1969 (origin d_1941) scored against the organizers' truth
+file, which is loaded only after ``analysis_plan.json`` is persisted.
+Smoke mode shifts the whole protocol back 28 days so pseudo-test
+ d_1914..d_1941 comes from the panel and never touches official truth.
+
+Sequence: weights + consistency gates -> baselines -> LightGBM grid ->
+select -> persist plan -> load test truth -> official score gate ->
+refit 3 seeds -> test WRMSSE + item-cluster bootstrap -> aggregate
+comparison -> inventory scenario -> official reference -> manifest.
 """
 
 from __future__ import annotations
@@ -16,23 +20,39 @@ import time
 from pathlib import Path
 from typing import Any
 
-import lightgbm as lgb
 import numpy as np
 
 from demand.data.m5 import (
+    COMPETITION_FILES,
+    FULL_BOUNDS,
     HORIZON,
+    SMOKE_BOUNDS,
+    Bounds,
     M5Data,
     load_m5,
-    split_indices,
+    load_test_truth,
+    origin_indices,
+    sha256_file,
+    window_indices,
 )
+from demand.data.official import official_reference, verify_official_dataset
+from demand.evaluation.bootstrap import item_cluster_bootstrap
 from demand.evaluation.inventory import (
+    OVERAGE_FRAC,
+    PRIMARY_FRACTILE,
+    SENSITIVITY_FRACTILE,
     order_up_to,
     residual_quantile,
     simulate_inventory,
 )
+from demand.evaluation.verification import (
+    check_consistency,
+    check_official_scores,
+    check_test_truth_integrity,
+    check_weights,
+)
 from demand.evaluation.wrmsse import (
     WRMSSEResult,
-    bootstrap_wrmsse,
     evaluate_wrmsse,
     level_group_map,
     point_metrics,
@@ -45,17 +65,18 @@ from demand.models.lgbm import (
     MAX_ROUNDS,
     N_ORIGINS,
     SEED,
+    FeatureContext,
+    build_feature_context,
     build_xy,
     predict_origin,
+    refit_fixed_iterations,
     sample_origins,
     train_config,
 )
 from demand.models.statistical import BASELINE_BUILDERS
 
-PROTOCOL = "m5-benchmark-v1"
+PROTOCOL = "m5-benchmark-v2"
 SEEDS = (0, 1, 2)
-SERVICE_LEVEL = 0.95
-HOLDING_FRAC = 0.25
 
 
 def _epoch() -> float:
@@ -82,96 +103,65 @@ def _wrmsse_at_origin(
     data: M5Data,
     group_map: dict[str, list[np.ndarray]],
     pred: np.ndarray,
-    train_end_idx: int,
-    horizon_start_idx: int,
-    n_boot: int,
-) -> tuple[WRMSSEResult, dict[str, float]]:
-    res = evaluate_wrmsse(
+    origin_idx: int,
+    y_true: np.ndarray | None = None,
+) -> WRMSSEResult:
+    return evaluate_wrmsse(
         data,
         group_map,
         pred,
-        train_end_idx=train_end_idx,
-        horizon_start_idx=horizon_start_idx,
+        origin_idx=origin_idx,
+        y_true=y_true,
         horizon=HORIZON,
     )
-    ci = (
-        bootstrap_wrmsse(res, n_boot=n_boot, seed=0)
-        if n_boot > 0
-        else {"mean": res.wrmsse, "ci_low": res.wrmsse, "ci_high": res.wrmsse}
-    )
-    return res, ci
 
 
 def _fit_predict_baselines(
-    data: M5Data, splits: dict[str, tuple[int, int]], horizon: int
+    data: M5Data, origins: dict[str, int], horizon: int
 ) -> dict[str, dict[str, np.ndarray]]:
     """Forecast every baseline at the validation and test origins."""
     panel = data.panel
-    val_origin = splits["validation"][0] - 1  # last day before val window
-    test_origin = splits["test"][0] - 1
     out: dict[str, dict[str, np.ndarray]] = {}
     for name, fn in BASELINE_BUILDERS.items():
         out[name] = {
-            "validation": fn(panel, val_origin, horizon).astype(np.float32),
-            "test": fn(panel, test_origin, horizon).astype(np.float32),
+            "validation": fn(panel, origins["validation"], horizon).astype(np.float32),
+            "test": fn(panel, origins["test"], horizon).astype(np.float32),
         }
     return out
 
 
-def _refit_fixed_iterations(
-    X: np.ndarray,
-    y: np.ndarray,
-    config: dict[str, Any],
-    num_boost_round: int,
-    seed: int,
-) -> Any:
-    """Refit on train+val origins with the validation-selected iteration."""
-    params = {
-        "objective": "tweedie",
-        "tweedie_variance_power": 1.5,
-        "metric": "l2",
-        "seed": seed,
-        "num_threads": -1,
-        "verbosity": -1,
-        "max_bin": 255,
-        **config,
-    }
-    return lgb.train(params, lgb.Dataset(X, label=y), num_boost_round=num_boost_round)
-
-
-def _lgbm_pipeline(
+def _lgbm_select(
     data: M5Data,
-    splits: dict[str, tuple[int, int]],
+    ctx: FeatureContext,
+    bounds: Bounds,
     horizon: int,
     n_origins: int,
+    group_map: dict[str, list[np.ndarray]],
+    grid: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Grid selection on validation WRMSSE, then seeded refits for test."""
-    tr0, tr1 = splits["train"]
-    va0, va1 = splits["validation"]
-    te0, _ = splits["test"]
-    group_map = level_group_map(data.ids)
+    """Grid selection on validation WRMSSE (pre-plan phase)."""
+    splits = window_indices(bounds)
+    origins = origin_indices(bounds)
+    tr1 = splits["train"][1]
+    va_origin = origins["validation"]
 
-    train_origins = sample_origins(tr0, tr1, n_origins)
+    # Origins whose 28 labels stay inside the train window.
+    train_max_origin = tr1 - HORIZON
+    train_origins = sample_origins(0, train_max_origin, n_origins)
     X_tr, y_tr = build_xy(
-        data.panel, data.price_days, data.calendar, data.ids, train_origins, horizon
+        data.panel, ctx, data, train_origins, horizon
     )
-    val_origin_idx = va0 - 1  # d_1885 -> forecasts d_1886..d_1913
-    # Early stopping watches the validation window itself: features at the
-    # val origin use only train data (lags >= 28), labels are val actuals.
-    X_es, y_es = build_xy(
-        data.panel, data.price_days, data.calendar, data.ids,
-        np.array([val_origin_idx]), horizon,
-    )
+    X_es, y_es = build_xy(data.panel, ctx, data, np.array([va_origin]), horizon)
+    assert y_tr is not None and y_es is not None
 
     grid_scores: list[dict[str, Any]] = []
     val_predictions: dict[int, np.ndarray] = {}
-    for ci, cfg in enumerate(GRID):
+    for ci, cfg in enumerate(grid):
         model, best_it = train_config(X_tr, y_tr, X_es, y_es, cfg, SEED)
         pred_val = predict_origin(
-            model, data.panel, data.price_days, data.calendar, data.ids,
-            val_origin_idx, horizon,
+            model, data.panel, ctx, data, va_origin, horizon
         )
-        res, _ = _wrmsse_at_origin(data, group_map, pred_val, tr1, va0, 0)
+        res = _wrmsse_at_origin(data, group_map, pred_val, va_origin)
         grid_scores.append(
             {"config": cfg, "best_iteration": best_it, "val_wrmsse": res.wrmsse}
         )
@@ -180,59 +170,79 @@ def _lgbm_pipeline(
     del X_tr, y_tr, X_es, y_es
 
     best_i = int(np.argmin([g["val_wrmsse"] for g in grid_scores]))
-    best_cfg = grid_scores[best_i]["config"]
-    best_iter = grid_scores[best_i]["best_iteration"]
-
-    # Refit on train+val origins for the test window, seeds 0,1,2.
-    all_origins = sample_origins(tr0, va1, n_origins)
-    X_all, y_all = build_xy(
-        data.panel, data.price_days, data.calendar, data.ids, all_origins, horizon
-    )
-    test_origin_idx = te0 - 1  # d_1913 -> forecasts d_1914..d_1941
-    test_predictions = []
-    for seed in SEEDS:
-        model = _refit_fixed_iterations(X_all, y_all, best_cfg, best_iter, seed)
-        test_predictions.append(
-            predict_origin(
-                model, data.panel, data.price_days, data.calendar, data.ids,
-                test_origin_idx, horizon,
-            )
-        )
-        del model
-
     return {
+        "grid": grid,
         "grid_scores": grid_scores,
         "best_config_index": best_i,
-        "selected_config": best_cfg,
-        "selected_iteration": best_iter,
+        "selected_config": grid_scores[best_i]["config"],
+        "selected_iteration": grid_scores[best_i]["best_iteration"],
         "val_wrmsse_selected": grid_scores[best_i]["val_wrmsse"],
         "val_predictions": val_predictions,
-        "test_predictions_per_seed": test_predictions,
-        "test_prediction_mean": np.mean(np.stack(test_predictions), axis=0).astype(
-            np.float32
-        ),
         "n_origins": n_origins,
+        "train_origins": train_origins,
+        "train_max_origin": train_max_origin,
         "early_stop": EARLY_STOP,
         "max_rounds": MAX_ROUNDS,
     }
 
 
+def _lgbm_refit(
+    data: M5Data,
+    ctx: FeatureContext,
+    bounds: Bounds,
+    horizon: int,
+    n_origins: int,
+    selected: dict[str, Any],
+) -> dict[str, Any]:
+    """Refit on train+val origins at the selected iteration, seeds 0/1/2."""
+    splits = window_indices(bounds)
+    origins = origin_indices(bounds)
+    va1 = splits["validation"][1]
+    te_origin = origins["test"]
+
+    # Origins whose 28 labels stay inside train+validation.
+    refit_max_origin = va1 - HORIZON
+    all_origins = sample_origins(0, refit_max_origin, n_origins)
+    X_all, y_all = build_xy(data.panel, ctx, data, all_origins, horizon)
+    assert y_all is not None
+
+    test_predictions = []
+    for seed in SEEDS:
+        model = refit_fixed_iterations(
+            X_all,
+            y_all,
+            selected["selected_config"],
+            selected["selected_iteration"],
+            seed,
+        )
+        test_predictions.append(
+            predict_origin(model, data.panel, ctx, data, te_origin, horizon)
+        )
+        del model
+    del X_all, y_all
+    return {
+        "refit_origins": all_origins,
+        "refit_max_origin": refit_max_origin,
+        "test_predictions_per_seed": test_predictions,
+        "test_prediction_mean": np.mean(
+            np.stack(test_predictions), axis=0
+        ).astype(np.float32),
+    }
+
+
 def _inventory_analysis(
     data: M5Data,
-    splits: dict[str, tuple[int, int]],
+    bounds: Bounds,
     val_preds: dict[str, np.ndarray],
     test_preds: dict[str, np.ndarray],
+    y_val: np.ndarray,
+    y_test: np.ndarray,
     horizon: int,
 ) -> dict[str, Any]:
-    """Newsvendor scenario: order-up-to from val residual quantiles.
-
-    Scenario analysis only, not a measured saving. Candidates are every
-    model with both a validation and a test prediction.
-    """
+    """Newsvendor scenario at fractile 0.8 with a 0.95 sensitivity row."""
+    splits = window_indices(bounds)
     va0, va1 = splits["validation"]
-    te0, _ = splits["test"]
-    y_val = data.panel[:, va0 : va1 + 1].astype(np.float64)
-    y_test = data.panel[:, te0 : te0 + horizon].astype(np.float64)
+    te0 = va1 + 1  # first test day index
     price_test = data.price_days[:, te0 : te0 + horizon].astype(np.float64)
 
     out: dict[str, Any] = {}
@@ -240,139 +250,278 @@ def _inventory_analysis(
         val_pred = val_preds.get(name)
         if val_pred is None:
             continue
-        q = residual_quantile(y_val, val_pred.astype(np.float64), SERVICE_LEVEL)
-        levels = order_up_to(test_pred.astype(np.float64), q)
-        stats = simulate_inventory(y_test, levels, price_test, HOLDING_FRAC)
-        out[name] = {
-            "service_level": SERVICE_LEVEL,
-            "holding_frac": HOLDING_FRAC,
-            **stats,
-        }
+        entry: dict[str, Any] = {"overage_frac": OVERAGE_FRAC}
+        for tag, fractile in (
+            ("primary", PRIMARY_FRACTILE),
+            ("sensitivity", SENSITIVITY_FRACTILE),
+        ):
+            q = residual_quantile(
+                y_val, val_pred.astype(np.float64), fractile
+            )
+            levels = order_up_to(test_pred.astype(np.float64), q)
+            entry[tag] = {
+                "fractile": fractile,
+                **simulate_inventory(y_test, levels, price_test),
+            }
+        out[name] = entry
     return out
 
 
 def run_benchmark(
     data_dir: Path,
+    official_dir: Path,
     out_dir: Path,
     *,
     n_origins: int = N_ORIGINS,
-    n_boot: int = 1000,
+    n_boot: int = 500,
     git_sha: str | None = None,
     smoke: bool = False,
 ) -> dict[str, Any]:
     """Run the frozen protocol and write benchmark artifacts."""
     out_dir.mkdir(parents=True, exist_ok=True)
+    timings: dict[str, float] = {}
+    t_stage = _epoch()
+
+    def mark(stage: str) -> None:
+        nonlocal t_stage
+        now = _epoch()
+        timings[stage] = round(now - t_stage, 3)
+        print(f"[stage] {stage}: {timings[stage]:.1f}s", flush=True)
+        t_stage = now
+
+    bounds = SMOKE_BOUNDS if smoke else FULL_BOUNDS
     data = load_m5(data_dir)
-    splits = split_indices()
+    mark("load_m5")
+    competition_sha = {
+        name: sha256_file(data_dir / name) for name in COMPETITION_FILES
+    }
+    official_sha = verify_official_dataset(official_dir)
+    mark("verify_official")
+
+    splits = window_indices(bounds)
+    origins = origin_indices(bounds)
     horizon = HORIZON
     group_map = level_group_map(data.ids)
 
-    baseline_preds = _fit_predict_baselines(data, splits, horizon)
-    lgbm = _lgbm_pipeline(data, splits, horizon, n_origins)
+    weights_report = check_weights(data, official_dir)
+    mark("weights_check")
+    consistency_report = check_consistency(data, official_dir)
+    mark("consistency_check")
 
-    # Validation WRMSSE for baselines and every grid config's prediction.
-    tr1 = splits["train"][1]
-    va0 = splits["validation"][0]
+    ctx = build_feature_context(data)
+    mark("feature_context")
+
+    baseline_preds = _fit_predict_baselines(data, origins, horizon)
+    mark("baselines")
+    grid = GRID[:1] if smoke else GRID
+    lgbm_sel = _lgbm_select(
+        data, ctx, bounds, horizon, n_origins, group_map, grid
+    )
+    mark("lgbm_grid")
+
+    # Validation WRMSSE: baselines plus every grid config's prediction.
+    va_origin = origins["validation"]
     val_results: dict[str, Any] = {}
     val_pred_map: dict[str, np.ndarray] = {}
+    val_wrmsse_point: dict[str, float] = {}
     for name, preds in baseline_preds.items():
-        res, ci = _wrmsse_at_origin(
-            data, group_map, preds["validation"], tr1, va0, n_boot
-        )
-        val_results[name] = {
-            "wrmsse": res.wrmsse,
-            "ci": ci,
-            "per_level": res.per_level,
-        }
+        res = _wrmsse_at_origin(data, group_map, preds["validation"], va_origin)
+        val_results[name] = {"wrmsse": res.wrmsse, "per_level": res.per_level}
         val_pred_map[name] = preds["validation"]
-    for ci, pred in lgbm["val_predictions"].items():
-        cfg = GRID[ci]
+        val_wrmsse_point[name] = res.wrmsse
+    for ci, pred in lgbm_sel["val_predictions"].items():
+        cfg = lgbm_sel["grid"][ci]
         key = f"lightgbm_{cfg['num_leaves']}x{cfg['learning_rate']}"
-        res, _ = _wrmsse_at_origin(data, group_map, pred, tr1, va0, 0)
-        val_results[key] = {"wrmsse": res.wrmsse, "config": cfg}
-    val_pred_map["lightgbm"] = lgbm["val_predictions"][lgbm["best_config_index"]]
+        res = _wrmsse_at_origin(data, group_map, pred, va_origin)
+        val_results[key] = {
+            "wrmsse": res.wrmsse,
+            "per_level": res.per_level,
+            "config": cfg,
+        }
+        val_wrmsse_point[key] = res.wrmsse
+    selected_key = (
+        f"lightgbm_{lgbm_sel['selected_config']['num_leaves']}"
+        f"x{lgbm_sel['selected_config']['learning_rate']}"
+    )
+    val_results["lightgbm"] = val_results[selected_key]
+    val_pred_map["lightgbm"] = lgbm_sel["val_predictions"][
+        lgbm_sel["best_config_index"]
+    ]
+    val_wrmsse_point["lightgbm"] = lgbm_sel["val_wrmsse_selected"]
+    mark("validation_wrmsse")
 
-    # Freeze the plan before any test-window metric.
+    # Freeze the plan before any test-window truth access.
     card_write_epoch = _epoch()
     plan = {
         "protocol": PROTOCOL,
         "seed": SEED,
         "seeds": list(SEEDS),
         "horizon": horizon,
-        "splits": {
-            k: {"start_day": v[0] + 1, "end_day": v[1] + 1}
-            for k, v in splits.items()
+        "bounds": {
+            "train_end_day": bounds.train_end_day,
+            "val_end_day": bounds.val_end_day,
+            "test_start_day": bounds.test_start_day,
+            "test_end_day": bounds.test_end_day,
         },
+        "smoke_shifted": smoke,
         "n_origins": n_origins,
-        "lgbm_grid": GRID,
+        "lgbm_grid": lgbm_sel["grid"],
         "lgbm_early_stop": {"early_stop": EARLY_STOP, "max_rounds": MAX_ROUNDS},
         "lgbm_selected": {
-            "config": lgbm["selected_config"],
-            "best_iteration": lgbm["selected_iteration"],
-            "val_wrmsse": lgbm["val_wrmsse_selected"],
+            "config": lgbm_sel["selected_config"],
+            "best_iteration": lgbm_sel["selected_iteration"],
+            "val_wrmsse": lgbm_sel["val_wrmsse_selected"],
         },
-        "service_level": SERVICE_LEVEL,
-        "holding_frac": HOLDING_FRAC,
+        "primary_fractile": PRIMARY_FRACTILE,
+        "sensitivity_fractile": SENSITIVITY_FRACTILE,
+        "overage_frac": OVERAGE_FRAC,
         "n_bootstrap": n_boot,
         "smoke": smoke,
     }
     _write_json(out_dir / "analysis_plan.json", plan)
-    first_test_read_epoch = _epoch()
+    mark("analysis_plan")
 
-    # ---- Test window: first and only test metric computation. ----
-    te0 = splits["test"][0]
-    test_train_end = te0 - 1  # train+val through d_1913
+    # ---- Test truth: first and only official-truth access. ----
+    if smoke:
+        integrity = check_test_truth_integrity(data, official_dir)
+        first_test_read_epoch = float(integrity["first_test_read_epoch"])
+        # Pseudo-test truth comes from the panel (d_1914..d_1941).
+        te0_panel = splits["validation"][1] + 1
+        y_test = data.panel[:, te0_panel : te0_panel + horizon]
+    else:
+        y_test, first_test_read_epoch = load_test_truth(
+            official_dir / "sales_test_evaluation.csv", data.ids
+        )
+    mark("test_truth")
+
+    # Official score gate (full run only): Naive/sNaive vs the
+    # published table; cheap stop before the LightGBM refit.
+    verification: dict[str, Any] = {
+        "weights": weights_report,
+        "consistency": consistency_report,
+    }
+    if smoke:
+        verification["test_truth_integrity"] = {
+            "sha256": integrity["sha256"],
+            "shape": integrity["shape"],
+            "pass": integrity["pass"],
+        }
+        verification["official_scores"] = {
+            "pass": None,
+            "note": "skipped in smoke; pseudo-test is not the private window",
+        }
+    else:
+        score_report = check_official_scores(
+            data,
+            group_map,
+            {
+                "naive": baseline_preds["naive"]["test"],
+                "seasonal_naive": baseline_preds["seasonal_naive"]["test"],
+            },
+            origin_idx=origins["test"],
+            y_true=y_test,
+            official_dir=official_dir,
+        )
+        verification["official_scores"] = score_report
+        verification["test_truth_sha256"] = official_sha[
+            "sales_test_evaluation.csv"
+        ]
+        verification["pass"] = bool(
+            weights_report["pass"]
+            and consistency_report["pass"]
+            and score_report["pass"]
+        )
+        _write_json(out_dir / "metric_verification.json", verification)
+        if not score_report["pass"]:
+            raise RuntimeError(
+                "official WRMSSE check failed; see metric_verification.json"
+            )
+        mark("official_score_check")
+    if smoke:
+        _write_json(out_dir / "metric_verification.json", verification)
+
+    # ---- Post-plan: refit and all test-window metrics. ----
+    lgbm_refit = _lgbm_refit(
+        data, ctx, bounds, horizon, n_origins, lgbm_sel
+    )
+    mark("lgbm_refit")
+
+    te_origin = origins["test"]
     test_results: dict[str, Any] = {}
     test_pred_map: dict[str, np.ndarray] = {}
+    test_wrmsse_results: dict[str, WRMSSEResult] = {}
 
     for name, preds in baseline_preds.items():
         pred = preds["test"]
-        res, ci = _wrmsse_at_origin(
-            data, group_map, pred, test_train_end, te0, n_boot
-        )
-        pm = point_metrics(
-            data.panel[:, te0 : te0 + horizon], pred
-        )
+        res = _wrmsse_at_origin(data, group_map, pred, te_origin, y_test)
+        pm = point_metrics(y_test, pred)
         test_results[name] = {
             "wrmsse": res.wrmsse,
-            "ci": ci,
             "per_level": res.per_level,
             "point": pm,
         }
         test_pred_map[name] = pred
+        test_wrmsse_results[name] = res
+    mark("test_baselines")
 
-    pred_mean = lgbm["test_prediction_mean"]
-    res, ci = _wrmsse_at_origin(
-        data, group_map, pred_mean, test_train_end, te0, n_boot
-    )
-    pm = point_metrics(data.panel[:, te0 : te0 + horizon], pred_mean)
+    pred_mean = lgbm_refit["test_prediction_mean"]
+    res = _wrmsse_at_origin(data, group_map, pred_mean, te_origin, y_test)
+    pm = point_metrics(y_test, pred_mean)
     per_seed = []
-    for seed, pred in zip(SEEDS, lgbm["test_predictions_per_seed"], strict=True):
-        r, _ = _wrmsse_at_origin(data, group_map, pred, test_train_end, te0, 0)
+    for seed, pred in zip(
+        SEEDS, lgbm_refit["test_predictions_per_seed"], strict=True
+    ):
+        r = _wrmsse_at_origin(data, group_map, pred, te_origin, y_test)
         per_seed.append({"seed": seed, "wrmsse": r.wrmsse})
+        del r
     test_results["lightgbm"] = {
         "wrmsse": res.wrmsse,
-        "ci": ci,
         "per_level": res.per_level,
         "point": pm,
         "per_seed": per_seed,
     }
     test_pred_map["lightgbm"] = pred_mean
+    test_wrmsse_results["lightgbm"] = res
+    mark("test_lightgbm")
 
-    # Aggregate-level comparison on test: SARIMA + Prophet vs LGBM bottom-up.
+    boot = item_cluster_bootstrap(
+        data,
+        group_map,
+        test_pred_map,
+        test_wrmsse_results,
+        origin_idx=te_origin,
+        y_true=y_test,
+        horizon=horizon,
+        n_boot=n_boot,
+        seed=0,
+        val_wrmsse={
+            m: val_wrmsse_point[m]
+            for m in ("naive", "seasonal_naive", "ma28", "lightgbm")
+        },
+    )
+    for m, entry in boot["models"].items():
+        test_results[m]["ci"] = {
+            "mean": entry["mean"],
+            "ci_low": entry["ci_low"],
+            "ci_high": entry["ci_high"],
+            "n_finite": entry["n_finite"],
+            "point": entry["point"],
+        }
+    mark("bootstrap")
+
+    # Aggregate-level comparison: SARIMA + Prophet vs LGBM bottom-up.
     agg_results: dict[str, Any] = {}
     for level in AGG_LEVELS:
         level_entry: dict[str, Any] = {}
-        agg_tr, _ = aggregate_panel(
-            data.panel[:, : test_train_end + 1], data.ids, level
+        agg_tr, agg_names = aggregate_panel(
+            data.panel[:, : te_origin + 1], data.ids, level
         )
-        true_agg, agg_names = aggregate_panel(
-            data.panel[:, te0 : te0 + horizon], data.ids, level
-        )
+        true_agg, _ = aggregate_panel(y_test, data.ids, level)
         lgbm_agg, _ = aggregate_panel(pred_mean, data.ids, level)
         for method in ("sarima", "prophet"):
             fc, _ = aggregate_forecasts(
-                level, data.panel, data.ids, test_train_end, horizon, method
+                level, data.panel, data.ids, te_origin, horizon, method,
+                data.calendar,
             )
             rms = [
                 rmsse_unweighted(agg_tr[i], true_agg[i], fc[i])
@@ -395,18 +544,32 @@ def run_benchmark(
             },
         }
         agg_results[level] = level_entry
+    mark("aggregate_models")
 
+    # Inventory scenario: validation residual quantiles -> test sim.
+    va0, va1 = splits["validation"]
+    y_val = data.panel[:, va0 : va1 + 1].astype(np.float64)
     inv = _inventory_analysis(
-        data, splits, val_pred_map, test_pred_map, horizon
+        data, bounds, val_pred_map, test_pred_map, y_val,
+        y_test.astype(np.float64), horizon,
     )
+    mark("inventory")
+
+    xlsx = official_dir / "scores_and_ranks.xlsx"
+    ref = official_reference(xlsx)
+    _write_json(out_dir / "official_reference.json", ref)
+    mark("official_reference")
 
     metrics = {
         "protocol": PROTOCOL,
         "validation": val_results,
         "test": test_results,
+        "paired_bootstrap": boot["paired"],
+        "bootstrap": {"n_boot": n_boot, "seed": 0, "n_items": boot["n_items"]},
         "aggregate_test": agg_results,
         "inventory_scenario": inv,
         "smoke": smoke,
+        "stage_timings_s": timings,
     }
     _write_json(out_dir / "metrics.json", metrics)
 
@@ -419,19 +582,21 @@ def run_benchmark(
         "ordering_ok": bool(card_write_epoch < first_test_read_epoch),
         "data": {
             "n_series": data.n_series,
-            "n_days": data.n_days,
-            "files": [
-                "sales_train_validation.csv",
-                "sales_train_evaluation.csv",
-                "calendar.csv",
-                "sell_prices.csv",
-            ],
+            "panel_days": data.n_days,
+            "calendar_days": data.n_calendar_days,
+            "files": list(COMPETITION_FILES),
+            "files_sha256": competition_sha,
             "source": "kaggle m5-forecasting-accuracy",
         },
+        "official_files_sha256": official_sha,
+        "verification": verification,
         "config": plan,
+        "stage_timings_s": timings,
         "artifacts": [
             "analysis_plan.json",
             "metrics.json",
+            "metric_verification.json",
+            "official_reference.json",
             "manifest.json",
             "report.md",
         ],
@@ -466,10 +631,13 @@ def render_report(metrics: dict[str, Any], manifest: dict[str, Any]) -> str:
         "| :--- | ---: | :--- | ---: | ---: |",
     ]
     for name, r in metrics["test"].items():
-        c = r["ci"]
+        c = r.get("ci")
+        ci_txt = (
+            f"[{c['ci_low']:.4f}, {c['ci_high']:.4f}]" if c else "n/a"
+        )
         lines.append(
             f"| {name} | {r['wrmsse']:.4f} "
-            f"| [{c['ci_low']:.4f}, {c['ci_high']:.4f}] "
+            f"| {ci_txt} "
             f"| {r['point']['mae']:.2f} | {r['point']['bias']:.2f} |"
         )
     lines.append("")

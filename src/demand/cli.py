@@ -14,22 +14,28 @@ app = typer.Typer(help="M5 demand forecasting benchmark.")
 @app.command()
 def benchmark(
     data_dir: Path = typer.Option(  # noqa: B008
-        Path("data/m5"), "--data-dir", help="Directory with the four M5 CSVs."
+        Path("data/m5"), "--data-dir", help="Directory with the three M5 CSVs."
+    ),
+    official_dir: Path = typer.Option(  # noqa: B008
+        Path("data/m5-official"),
+        "--official-dir",
+        help="Directory with the five official evaluation files.",
     ),
     out_dir: Path = typer.Option(  # noqa: B008
         Path("artifacts/benchmark"), "--out-dir", help="Artifact output dir."
     ),
     n_origins: int = typer.Option(40, "--n-origins", help="LGBM training origins."),
-    n_boot: int = typer.Option(1000, "--n-boot", help="Bootstrap replicates."),
+    n_boot: int = typer.Option(500, "--n-boot", help="Bootstrap replicates."),
     git_sha: str | None = typer.Option(None, "--git-sha", help="Override git SHA."),
-    smoke: bool = typer.Option(False, "--smoke", help="Smoke mode (reduced origins)."),
+    smoke: bool = typer.Option(False, "--smoke", help="Smoke mode (shifted protocol)."),
 ) -> None:
     """Run the frozen M5 benchmark protocol."""
     if smoke:
         n_origins = min(n_origins, 6)
-        n_boot = min(n_boot, 50)
+        n_boot = min(n_boot, 20)
     run_benchmark(
         data_dir,
+        official_dir,
         out_dir,
         n_origins=n_origins,
         n_boot=n_boot,
