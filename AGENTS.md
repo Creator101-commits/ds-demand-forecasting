@@ -21,12 +21,20 @@ uv run mypy src
 
 ## Key conventions
 
-- Frozen protocol: train d_1..d_1885, validation d_1886..d_1913, test
-  d_1914..d_1941. Model and threshold selection use validation only; the
-  test window is read once after `analysis_plan.json` is persisted.
+- Frozen protocol `m5-benchmark-v2`: train d_1..d_1913, validation
+  d_1914..d_1941, test d_1942..d_1969 scored against the organizers'
+  private-window truth. Model and threshold selection use validation
+  only; the test truth file is read once after `analysis_plan.json` is
+  persisted. Verification gates (official weights, validation
+  consistency, Naive/sNaive vs the published table within 1e-5) run
+  before any test metric.
 - WRMSSE is the official M5 metric: 12 aggregation levels, RMSSE scales
   from the first non-zero sale, dollar-sales weights from the last 28
-  days before each forecast origin.
+  days before each forecast origin, equal averaging over levels.
+- Test CIs use a paired item-cluster bootstrap, not i.i.d. unit
+  resampling.
+- Official evaluation files live in the private Kaggle dataset
+  `sreeharshak101/m5-official-evaluation`, sha256-pinned in code.
 - `results/` holds unedited kernel output; `image.png` renders from
   `results/` only.
 
