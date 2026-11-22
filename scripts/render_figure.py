@@ -150,8 +150,9 @@ def main() -> None:
         ax.set_xticklabels(levels, fontsize=9)
         ax.set_ylabel("mean RMSSE (lower is better)")
         ax.set_title(
-            "Aggregate series RMSSE (test): SARIMA vs Prophet vs "
-            "LightGBM bottom-up"
+            "Aggregate series RMSSE (test)\n"
+            "SARIMA vs Prophet vs LightGBM bottom-up",
+            fontsize=11,
         )
         ax.legend(fontsize=8)
     else:
@@ -171,10 +172,15 @@ def main() -> None:
                     fontsize=8)
         mean_val = float(test["lightgbm"]["wrmsse"])
         ax.axhline(mean_val, color="#555555", ls="--", lw=1)
-        ax.text(
-            xs[0] - 0.15, mean_val,
-            f"3-seed mean forecast {mean_val:.3f}",
-            va="center", ha="left", fontsize=8, color="#555555",
+        ax.annotate(
+            f"seed-averaged forecast {mean_val:.3f}",
+            xy=(xs[0] - 0.15, mean_val),
+            xytext=(0, 4),
+            textcoords="offset points",
+            va="bottom",
+            ha="left",
+            fontsize=8,
+            color="#555555",
         )
         ax.set_xlim(min(xs) - 0.5, max(xs) + 0.5)
         ax.margins(y=0.3)
