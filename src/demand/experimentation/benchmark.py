@@ -68,6 +68,7 @@ from demand.models.lgbm import (
     FeatureContext,
     build_feature_context,
     build_xy,
+    cap_bound,
     predict_origin,
     refit_fixed_iterations,
     sample_origins,
@@ -163,7 +164,12 @@ def _lgbm_select(
         )
         res = _wrmsse_at_origin(data, group_map, pred_val, va_origin)
         grid_scores.append(
-            {"config": cfg, "best_iteration": best_it, "val_wrmsse": res.wrmsse}
+            {
+                "config": cfg,
+                "best_iteration": best_it,
+                "cap_bound": cap_bound(best_it),
+                "val_wrmsse": res.wrmsse,
+            }
         )
         val_predictions[ci] = pred_val
         del model
@@ -366,10 +372,12 @@ def run_benchmark(
         "smoke_shifted": smoke,
         "n_origins": n_origins,
         "lgbm_grid": lgbm_sel["grid"],
+        "lgbm_grid_scores": lgbm_sel["grid_scores"],
         "lgbm_early_stop": {"early_stop": EARLY_STOP, "max_rounds": MAX_ROUNDS},
         "lgbm_selected": {
             "config": lgbm_sel["selected_config"],
             "best_iteration": lgbm_sel["selected_iteration"],
+            "cap_bound": cap_bound(lgbm_sel["selected_iteration"]),
             "val_wrmsse": lgbm_sel["val_wrmsse_selected"],
         },
         "primary_fractile": PRIMARY_FRACTILE,

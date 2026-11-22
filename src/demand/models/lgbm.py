@@ -46,7 +46,7 @@ GRID = [
     {"num_leaves": 255, "learning_rate": 0.08},
     {"num_leaves": 255, "learning_rate": 0.03},
 ]
-MAX_ROUNDS = 400
+MAX_ROUNDS = 1500
 EARLY_STOP = 50
 ROLL_WINDOWS = (7, 14, 28, 56, 112)
 STATIC_COLS = ("item_id", "dept_id", "cat_id", "store_id", "state_id")
@@ -278,6 +278,20 @@ def train_config(
     )
     best = int(model.best_iteration or MAX_ROUNDS)
     return model, best
+
+
+def cap_bound(
+    best_iteration: int,
+    max_rounds: int = MAX_ROUNDS,
+    early_stop: int = EARLY_STOP,
+) -> bool:
+    """True when the round cap binds: best iter is within early_stop of it.
+
+    Early stopping fires after ``early_stop`` rounds without improvement,
+    so a best iteration in the last ``early_stop`` rounds means the run
+    ended at ``num_boost_round`` rather than on a validation plateau.
+    """
+    return best_iteration >= max_rounds - early_stop
 
 
 def refit_fixed_iterations(

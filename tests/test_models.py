@@ -18,10 +18,12 @@ from demand.models.aggregate import prophet_frame
 from demand.models.lgbm import (
     CATEGORICAL_IDX,
     FEATURE_NAMES,
+    MAX_ROUNDS,
     N_FEATURES,
     FeatureContext,
     build_feature_context,
     build_xy,
+    cap_bound,
     predict_origin,
     sample_origins,
 )
@@ -238,6 +240,16 @@ def test_inventory_scenario_overage() -> None:
     assert stats["overage_cost"] == 7.5
     assert stats["total_cost"] == 17.5
     assert "holding_cost" not in stats
+
+
+def test_cap_bound_flags_only_cap_region() -> None:
+    # v2 evidence: best_iteration 399 at MAX_ROUNDS=400 with
+    # EARLY_STOP=50 bound the cap (399 >= 400 - 50).
+    assert cap_bound(399, max_rounds=400, early_stop=50)
+    assert cap_bound(MAX_ROUNDS)
+    assert cap_bound(MAX_ROUNDS - 50)
+    assert not cap_bound(MAX_ROUNDS - 51)
+    assert not cap_bound(100)
 
 
 def test_residual_quantile_fractile() -> None:
