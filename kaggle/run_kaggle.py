@@ -2,10 +2,12 @@
 
 Installs ``demand`` from the pinned source dataset uploaded by
 ``scripts/kaggle_run.sh``, locates the competition CSVs under
-``/kaggle/input/m5-forecasting-accuracy``, runs the frozen benchmark, and
-writes ``benchmark/`` artifacts including ``manifest.json`` with the git
-SHA. ``DEMAND_SMOKE=1`` reduces LGBM origins and bootstrap resamples for
-a diagnostic run.
+``/kaggle/input/m5-forecasting-accuracy`` and the official evaluation
+files under ``/kaggle/input/m5-official-evaluation``, runs the frozen
+benchmark, and writes ``benchmark/`` artifacts including
+``manifest.json`` with the git SHA. ``DEMAND_SMOKE=1`` shifts the
+protocol back 28 days and reduces work for a diagnostic run that never
+computes metrics on the official test truth.
 """
 
 from __future__ import annotations
@@ -21,11 +23,11 @@ KAGGLE_INPUT = Path("/kaggle/input")
 WORK = Path("/kaggle/working")
 BENCH = WORK / "benchmark"
 M5_FILES = {
-    "sales_train_validation.csv",
     "sales_train_evaluation.csv",
     "calendar.csv",
     "sell_prices.csv",
 }
+OFFICIAL_MARKER = "scores_and_ranks.xlsx"
 
 
 def _run(cmd: list[str]) -> None:
@@ -69,14 +71,25 @@ def _find_m5_dir() -> Path:
             return candidate
     matches = [
         p
-        for p in KAGGLE_INPUT.rglob("sales_train_validation.csv")
-        if (p.parent / "sales_train_evaluation.csv").exists()
+        for p in KAGGLE_INPUT.rglob("sales_train_evaluation.csv")
+        if (p.parent / "calendar.csv").exists()
     ]
     if len(matches) != 1:
         raise FileNotFoundError(
             f"expected the m5-forecasting-accuracy input dir, found {matches}"
         )
     return matches[0].parent
+
+
+def _find_official_dir() -> Path:
+    matches = [
+        p.parent for p in KAGGLE_INPUT.rglob(OFFICIAL_MARKER)
+    ]
+    if len(matches) != 1:
+        raise FileNotFoundError(
+            f"expected the m5-official-evaluation input dir, found {matches}"
+        )
+    return matches[0]
 
 
 def _ensure_cmdstan() -> None:
@@ -102,19 +115,22 @@ def main() -> None:
     from demand.experimentation.benchmark import run_benchmark  # noqa: PLC0415
 
     data_dir = _find_m5_dir()
+    official_dir = _find_official_dir()
     print(f"m5 data dir: {data_dir}", flush=True)
+    print(f"official dir: {official_dir}", flush=True)
     _ensure_cmdstan()
 
     smoke = bool(os.environ.get("DEMAND_SMOKE"))
     if smoke:
-        print("SMOKE MODE: n_origins=6 n_boot=50", flush=True)
+        print("SMOKE MODE: shifted bounds, 1 config, n_origins=6, B=20", flush=True)
 
     BENCH.mkdir(parents=True, exist_ok=True)
     result = run_benchmark(
         data_dir,
+        official_dir,
         BENCH,
         n_origins=6 if smoke else 40,
-        n_boot=50 if smoke else 1000,
+        n_boot=20 if smoke else 500,
         git_sha=sha,
         smoke=smoke,
     )

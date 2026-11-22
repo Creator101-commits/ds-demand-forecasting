@@ -9,8 +9,11 @@
   "enable_tpu": "false",
   "enable_internet": "true",
   "dataset_sources": [
-    "sreeharshak101/ds-demand-forecasting-src"
+    "sreeharshak101/ds-demand-forecasting-src",
+    "sreeharshak101/m5-official-evaluation"
   ],
-  "competition_sources": ["m5-forecasting-accuracy"],
+  "competition_sources": [
+    "m5-forecasting-accuracy"
+  ],
   "kernel_sources": []
 }
