@@ -18,13 +18,18 @@ from demand.data.m5 import (
     split_indices,
 )
 
+BOUNDARY = 20  # tiny-fixture analog of the frozen d_1913 boundary
+
 
 def _write_m5_files(tmp: Path, n_series: int = 4, n_days: int = 40) -> Path:
-    """Write a tiny but structurally valid M5 dataset."""
+    """Write a tiny but structurally valid M5 dataset.
+
+    Mimics the real files: the validation file covers days through the
+    boundary and the evaluation file covers all days (its early columns
+    duplicate the validation file).
+    """
     rng = np.random.default_rng(0)
     days = [f"d_{i}" for i in range(1, n_days + 1)]
-    # Split days across the two sales files like the real competition.
-    cut = n_days // 2
     ids = pd.DataFrame(
         {
             "id": [f"S{i}_ITEM{i}" for i in range(n_series)],
@@ -37,10 +42,11 @@ def _write_m5_files(tmp: Path, n_series: int = 4, n_days: int = 40) -> Path:
     )
     sales = rng.integers(0, 5, size=(n_series, n_days)).astype(float)
     val = pd.concat(
-        [ids, pd.DataFrame(sales[:, :cut], columns=days[:cut])], axis=1
+        [ids, pd.DataFrame(sales[:, :BOUNDARY], columns=days[:BOUNDARY])],
+        axis=1,
     )
     ev = pd.concat(
-        [ids, pd.DataFrame(sales[:, cut:], columns=days[cut:])], axis=1
+        [ids, pd.DataFrame(sales, columns=days)], axis=1
     )
     val.to_csv(tmp / "sales_train_validation.csv", index=False)
     ev.to_csv(tmp / "sales_train_evaluation.csv", index=False)
@@ -82,7 +88,7 @@ def _write_m5_files(tmp: Path, n_series: int = 4, n_days: int = 40) -> Path:
 
 def test_load_m5_shapes_and_alignment(tmp_path: Path) -> None:
     _write_m5_files(tmp_path)
-    data = load_m5(tmp_path)
+    data = load_m5(tmp_path, boundary_day=BOUNDARY)
     assert data.n_series == 4
     assert data.n_days == 40
     assert data.panel.shape == (4, 40)
@@ -110,11 +116,21 @@ def test_split_indices_frozen_boundaries() -> None:
 
 def test_series_dollar_sales(tmp_path: Path) -> None:
     _write_m5_files(tmp_path)
-    data = load_m5(tmp_path)
+    data = load_m5(tmp_path, boundary_day=BOUNDARY)
     # Price is 2.5 everywhere, so dollar sales = 2.5 * unit sales.
     dollars = series_dollar_sales(data, 0, 9)
     expected = data.panel[:, :10].sum(axis=1) * 2.5
     np.testing.assert_allclose(dollars, expected, rtol=1e-5)
+
+
+def test_load_m5_rejects_eval_train_disagreement(tmp_path: Path) -> None:
+    _write_m5_files(tmp_path)
+    ev_path = tmp_path / "sales_train_evaluation.csv"
+    ev = pd.read_csv(ev_path)
+    ev.loc[0, "d_1"] = ev.loc[0, "d_1"] + 100
+    ev.to_csv(ev_path, index=False)
+    with pytest.raises(ValueError, match="disagrees"):
+        load_m5(tmp_path, boundary_day=BOUNDARY)
 
 
 def test_load_m5_rejects_missing_file(tmp_path: Path) -> None:
