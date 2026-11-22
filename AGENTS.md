@@ -32,7 +32,12 @@ uv run mypy src
   from the first non-zero sale, dollar-sales weights from the last 28
   days before each forecast origin, equal averaging over levels.
 - Test CIs use a paired item-cluster bootstrap, not i.i.d. unit
-  resampling.
+  resampling; the percentile intervals are right-skewed because
+  resampled item multisets change aggregate composition.
+- LightGBM early stopping monitors its internal L2 metric on pooled
+  validation rows, not WRMSSE. `MAX_ROUNDS=1500`, `EARLY_STOP=50`,
+  and every grid config records `best_iteration` plus a `cap_bound`
+  flag in `analysis_plan.json` and the manifest.
 - Official evaluation files live in the private Kaggle dataset
   `sreeharshak101/m5-official-evaluation`, sha256-pinned in code.
 - `results/` holds unedited kernel output; `image.png` renders from

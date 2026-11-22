@@ -2,12 +2,14 @@
 
 ## Status
 
-In progress: protocol `m5-benchmark-v2` is implemented (official
-private-window test, verification gates, item-cluster bootstrap,
-origin-relative LightGBM features, real-date Prophet, corrected
-newsvendor fractile) and verified locally end to end: weights,
-consistency, truth integrity, and the official Naive/sNaive score
-gate all pass on the real files. Smoke kernel not yet run.
+Done: protocol `m5-benchmark-v2` is implemented and the v2.1 full
+Kaggle run (git `2a0a337`) passed every gate; `results/` holds the
+unedited kernel output and `image.png` renders from it. The earlier
+v2 run (git `65250f1`) is retained at
+`artifacts/kaggle/20261121-223604/` as "v2 as-run" for disclosure:
+its selected LightGBM config hit `best_iteration` 399 at
+`MAX_ROUNDS` 400, so v2.1 raised the cap to 1500 and recorded
+`cap_bound` per config. All v2.1 grid configs finished uncapped.
 
 ## Steps
 
@@ -38,8 +40,5 @@ gate all pass on the real files. Smoke kernel not yet run.
 
 ## Open questions
 
-- Whether the Kaggle CPU runtime lands under the budget; the smoke run
-  measures per-stage timings (load, gates, grid, refit, bootstrap,
-  aggregate models) for the extrapolation.
-- Prophet needs the cmdstan backend installed on first fit; the runner
-  provisions it via `cmdstanpy.install_cmdstan()`.
+- None blocking. The full run took ~2.3 CPU-hours on Kaggle, well
+  under the 9h budget; the smoke-based estimate held.
