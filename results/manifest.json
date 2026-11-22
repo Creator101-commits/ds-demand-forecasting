@@ -1,0 +1,219 @@
+{
+  "git_sha": "2a0a33787d77f0a8437c90994bf719a5cfcfd7ed",
+  "protocol": "m5-benchmark-v2",
+  "generated_at": "2026-11-22T19:00:12Z",
+  "card_write_epoch": 1795370270.4881992,
+  "first_test_read_epoch": 1795370270.4913676,
+  "ordering_ok": true,
+  "data": {
+    "n_series": 30490,
+    "panel_days": 1941,
+    "calendar_days": 1969,
+    "files": [
+      "sales_train_evaluation.csv",
+      "calendar.csv",
+      "sell_prices.csv"
+    ],
+    "files_sha256": {
+      "sales_train_evaluation.csv": "4b4a47c44c38380d2a9168216fea8c9ff2f31b1ddb772f8a0995952a038b8aa0",
+      "calendar.csv": "d12b5914ef03e66649adf5dd9e996e6602251c22b7a6af8f1f7e3aa12f8860f5",
+      "sell_prices.csv": "9da3ad1f8b8ccacdbdc70612191dd375ec24a4ac6625c24b75b3bc60b0bed2ef"
+    },
+    "source": "kaggle m5-forecasting-accuracy"
+  },
+  "official_files_sha256": {
+    "sales_test_evaluation.csv": "73773250dd7f7464f7a1bf3a54874dc7fc8cbb49885cd0bf1efe09bf48fd930d",
+    "sales_test_validation.csv": "964f8ff2c36ff8763fc1bfeb4753f081abf70923d0209e78bc4dd470d49e438a",
+    "weights_evaluation.csv": "b430c288d92a0e55e08b76c20aafb4c538469c7ba95e47ab768e37e385299497",
+    "weights_validation.csv": "c957ad6429e59ac148918ddca13656d71784957c38af19e3314cad5c931572ab",
+    "scores_and_ranks.xlsx": "a1284eb1fd42214ae784366564c9780c1cb40c0694340468e389c9fd46432529"
+  },
+  "verification": {
+    "weights": {
+      "weights_validation.csv": {
+        "n_matched": 42840,
+        "n_expected": 42840,
+        "max_abs_dollar_diff": 1.1641532182693481e-10,
+        "max_rel_weight_diff": 1.859098456299762e-06,
+        "pass": true
+      },
+      "weights_evaluation.csv": {
+        "n_matched": 42840,
+        "n_expected": 42840,
+        "max_abs_dollar_diff": 4.656612873077393e-10,
+        "max_rel_weight_diff": 2.1994687624358495e-06,
+        "pass": true
+      },
+      "pass": true
+    },
+    "consistency": {
+      "n_compared": 853720,
+      "max_abs_diff": 0.0,
+      "pass": true
+    },
+    "official_scores": {
+      "naive": {
+        "max_abs_diff": 4.218847493575595e-15,
+        "diffs": {
+          "L1": -1.1102230246251565e-15,
+          "L2": -3.1086244689504383e-15,
+          "L3": 3.3306690738754696e-15,
+          "L4": 2.4424906541753444e-15,
+          "L5": 4.218847493575595e-15,
+          "L6": -2.6645352591003757e-15,
+          "L7": 2.220446049250313e-16,
+          "L8": 0.0,
+          "L9": 8.881784197001252e-16,
+          "L10": 2.886579864025407e-15,
+          "L11": 3.774758283725532e-15,
+          "L12": 1.3322676295501878e-15,
+          "Avg": 4.440892098500626e-16
+        },
+        "pass": true
+      },
+      "seasonal_naive": {
+        "max_abs_diff": 3.1086244689504383e-15,
+        "diffs": {
+          "L1": -2.220446049250313e-16,
+          "L2": -4.440892098500626e-16,
+          "L3": 1.1102230246251565e-16,
+          "L4": 2.220446049250313e-16,
+          "L5": 0.0,
+          "L6": -2.220446049250313e-16,
+          "L7": 0.0,
+          "L8": -2.220446049250313e-16,
+          "L9": -3.3306690738754696e-16,
+          "L10": 3.1086244689504383e-15,
+          "L11": 2.886579864025407e-15,
+          "L12": 8.881784197001252e-16,
+          "Avg": 4.440892098500626e-16
+        },
+        "pass": true
+      },
+      "pass": true,
+      "tolerance": 1e-05
+    },
+    "test_truth_sha256": "73773250dd7f7464f7a1bf3a54874dc7fc8cbb49885cd0bf1efe09bf48fd930d",
+    "pass": true
+  },
+  "config": {
+    "protocol": "m5-benchmark-v2",
+    "seed": 42,
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "horizon": 28,
+    "bounds": {
+      "train_end_day": 1913,
+      "val_end_day": 1941,
+      "test_start_day": 1942,
+      "test_end_day": 1969
+    },
+    "smoke_shifted": false,
+    "n_origins": 40,
+    "lgbm_grid": [
+      {
+        "num_leaves": 63,
+        "learning_rate": 0.08
+      },
+      {
+        "num_leaves": 63,
+        "learning_rate": 0.03
+      },
+      {
+        "num_leaves": 255,
+        "learning_rate": 0.08
+      },
+      {
+        "num_leaves": 255,
+        "learning_rate": 0.03
+      }
+    ],
+    "lgbm_grid_scores": [
+      {
+        "config": {
+          "num_leaves": 63,
+          "learning_rate": 0.08
+        },
+        "best_iteration": 176,
+        "cap_bound": false,
+        "val_wrmsse": 0.7183624966523959
+      },
+      {
+        "config": {
+          "num_leaves": 63,
+          "learning_rate": 0.03
+        },
+        "best_iteration": 444,
+        "cap_bound": false,
+        "val_wrmsse": 0.7152303729395618
+      },
+      {
+        "config": {
+          "num_leaves": 255,
+          "learning_rate": 0.08
+        },
+        "best_iteration": 204,
+        "cap_bound": false,
+        "val_wrmsse": 0.740552173726662
+      },
+      {
+        "config": {
+          "num_leaves": 255,
+          "learning_rate": 0.03
+        },
+        "best_iteration": 361,
+        "cap_bound": false,
+        "val_wrmsse": 0.747732592421721
+      }
+    ],
+    "lgbm_early_stop": {
+      "early_stop": 50,
+      "max_rounds": 1500
+    },
+    "lgbm_selected": {
+      "config": {
+        "num_leaves": 63,
+        "learning_rate": 0.03
+      },
+      "best_iteration": 444,
+      "cap_bound": false,
+      "val_wrmsse": 0.7152303729395618
+    },
+    "primary_fractile": 0.8,
+    "sensitivity_fractile": 0.95,
+    "overage_frac": 0.25,
+    "n_bootstrap": 500,
+    "smoke": false
+  },
+  "stage_timings_s": {
+    "load_m5": 13.102,
+    "verify_official": 1.475,
+    "weights_check": 5.661,
+    "consistency_check": 0.157,
+    "feature_context": 0.894,
+    "baselines": 0.013,
+    "lgbm_grid": 4262.921,
+    "validation_wrmsse": 46.27,
+    "analysis_plan": 0.003,
+    "test_truth": 0.22,
+    "official_score_check": 13.579,
+    "lgbm_refit": 3466.17,
+    "test_baselines": 31.347,
+    "test_lightgbm": 40.332,
+    "bootstrap": 129.692,
+    "aggregate_models": 60.09,
+    "inventory": 0.34,
+    "official_reference": 0.099
+  },
+  "artifacts": [
+    "analysis_plan.json",
+    "metrics.json",
+    "metric_verification.json",
+    "official_reference.json",
+    "manifest.json",
+    "report.md"
+  ]
+}

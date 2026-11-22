@@ -1,0 +1,92 @@
+{
+  "protocol": "m5-benchmark-v2",
+  "seed": 42,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "horizon": 28,
+  "bounds": {
+    "train_end_day": 1913,
+    "val_end_day": 1941,
+    "test_start_day": 1942,
+    "test_end_day": 1969
+  },
+  "smoke_shifted": false,
+  "n_origins": 40,
+  "lgbm_grid": [
+    {
+      "num_leaves": 63,
+      "learning_rate": 0.08
+    },
+    {
+      "num_leaves": 63,
+      "learning_rate": 0.03
+    },
+    {
+      "num_leaves": 255,
+      "learning_rate": 0.08
+    },
+    {
+      "num_leaves": 255,
+      "learning_rate": 0.03
+    }
+  ],
+  "lgbm_grid_scores": [
+    {
+      "config": {
+        "num_leaves": 63,
+        "learning_rate": 0.08
+      },
+      "best_iteration": 176,
+      "cap_bound": false,
+      "val_wrmsse": 0.7183624966523959
+    },
+    {
+      "config": {
+        "num_leaves": 63,
+        "learning_rate": 0.03
+      },
+      "best_iteration": 444,
+      "cap_bound": false,
+      "val_wrmsse": 0.7152303729395618
+    },
+    {
+      "config": {
+        "num_leaves": 255,
+        "learning_rate": 0.08
+      },
+      "best_iteration": 204,
+      "cap_bound": false,
+      "val_wrmsse": 0.740552173726662
+    },
+    {
+      "config": {
+        "num_leaves": 255,
+        "learning_rate": 0.03
+      },
+      "best_iteration": 361,
+      "cap_bound": false,
+      "val_wrmsse": 0.747732592421721
+    }
+  ],
+  "lgbm_early_stop": {
+    "early_stop": 50,
+    "max_rounds": 1500
+  },
+  "lgbm_selected": {
+    "config": {
+      "num_leaves": 63,
+      "learning_rate": 0.03
+    },
+    "best_iteration": 444,
+    "cap_bound": false,
+    "val_wrmsse": 0.7152303729395618
+  },
+  "primary_fractile": 0.8,
+  "sensitivity_fractile": 0.95,
+  "overage_frac": 0.25,
+  "n_bootstrap": 500,
+  "smoke": false
+}
