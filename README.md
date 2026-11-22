@@ -101,7 +101,8 @@ Kaggle CPU kernel `sreeharshak101/ds-demand-forecasting-benchmark`.
 both official files (max relative weight diff 2.2e-6 over 42,840
 units), the competition panel equals `sales_test_validation.csv`
 exactly (853,720 values, max diff 0.0), our Naive/sNaive WRMSSE
-reproduces the published table within ~4e-15 on all 13 numbers, the
+reproduces the published table on every level L1 to L12 and the
+average, for both baselines (max abs diff 4.2e-15), the
 test-truth sha256 matches, and `ordering_ok` is true.
 
 ### Test WRMSSE (private window d_1942..d_1969)
@@ -126,18 +127,22 @@ WRMSSE): 63x0.08 -> 0.7184 (iter 176), **63x0.03 -> 0.7152 (iter
 (iter 361). All four finished below the cap (`cap_bound=false`,
 `MAX_ROUNDS=1500`, `EARLY_STOP=50`, recorded per config in
 `analysis_plan.json` and the manifest). Training sets
-`deterministic: true` with fixed seeds, so runs on the same data and
-hardware reproduce; the v2/v2.1 validation difference below is the
-stopping point, not run-to-run noise.
+`deterministic: true` with fixed seeds. The v2/v2.1 validation
+difference is attributed to the later L2-based stopping point; it is
+not directly verified because v2.1 did not log the iteration-399
+score.
 
 Paired item-cluster bootstrap differences vs seasonal naive
-(500 replicates, seed 0; negative favors the first model):
+(500 replicates, seed 0; negative favors the first model). Point
+diff is `a - b` on the two test WRMSSE values; replicate mean is the
+bootstrap `diff_mean`; share is the fraction of replicates favoring
+the first model (`share_negative`, 1.0 = all 500):
 
-| Contrast | Mean diff | 95% CI |
-| :--- | ---: | :--- |
-| LightGBM - seasonal naive | -0.2246 | [-0.2848, -0.1630] |
-| MA28 - seasonal naive | +0.0841 | [+0.0466, +0.1207] |
-| Naive - seasonal naive | +0.8679 | [+0.7612, +0.9853] |
+| Contrast | Point diff | Replicate mean | 95% CI | Share favoring a |
+| :--- | ---: | ---: | :--- | ---: |
+| LightGBM - seasonal naive | -0.2259 | -0.2246 | [-0.2848, -0.1630] | 1.00 |
+| MA28 - seasonal naive | +0.0991 | +0.0841 | [+0.0466, +0.1207] | 0.00 |
+| Naive - seasonal naive | +0.9050 | +0.8679 | [+0.7612, +0.9853] | 0.00 |
 
 LightGBM beats seasonal naive on every one of the 12 aggregation
 levels (per-level WRMSSE, test):
@@ -157,7 +162,8 @@ levels (per-level WRMSSE, test):
 | item x state | 0.949 | 1.205 |
 | item x store | 0.897 | 1.176 |
 
-Aggregate-level RMSSE on test (14 coarse series, lower is better):
+Aggregate-level mean RMSSE within each level on test (series
+counts: total 1, state 3, store 10; lower is better):
 
 | Level | SARIMA | Prophet | LightGBM bottom-up |
 | :--- | ---: | ---: | ---: |
@@ -168,19 +174,25 @@ Aggregate-level RMSSE on test (14 coarse series, lower is better):
 For context only, the organizers' published private-leaderboard
 averages in `official_reference.json` ("official published score,
 not rerun here") are: winner 0.5204, 50th place 0.5760, ES_bu
-0.6710. This benchmark's LightGBM average of 0.6211 sits between the
-published 50th-place and ES_bu scores.
+0.6710. This benchmark's seed-averaged forecast WRMSSE of 0.6211
+sits between the published 50th-place and ES_bu scores. This is a
+post-hoc benchmark run with hindsight of the competition results,
+not a leaderboard submission, so the placement is not a fair
+ranking.
 
-The item-cluster bootstrap intervals are right-skewed: each point
-estimate sits near its lower bound (LightGBM 0.6211 in
-[0.5958, 0.6944]). This is a property of the method. Each replicate
-redraws the 30,490-item population with replacement, which changes
-the composition of every aggregation level and therefore both the
-squared errors and the RMSSE scales inside the WRMSSE ratio.
-Resampled populations are noisier mixtures than the full population,
-so the replicate distribution is skewed and percentile intervals need
-not be symmetric around the point estimate. Read them as
-population-sensitivity bands, not symmetric error bars.
+The item-cluster bootstrap resamples the 3,049 item clusters with
+replacement (each item carries its 10 store series, so all of an
+item's series move together), which changes the composition of
+every aggregation level and therefore both the squared errors and
+the RMSSE scales inside the WRMSSE ratio. The skew is measured, not
+assumed: LightGBM's replicate mean is 0.6368 (`ci.mean`) against
+the full-population point estimate 0.6211, so replicates sit above
+the point on average and the percentile interval is right-skewed. No
+bias correction (BCa or similar) is applied. A plausible but
+untested explanation is that duplicated items add coherent error to
+the aggregate series; we do not claim it as the mechanism. Read the
+intervals as population-sensitivity bands, not symmetric error
+bars.
 
 ### v2 as-run disclosure
 
