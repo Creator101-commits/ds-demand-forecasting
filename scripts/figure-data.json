@@ -1,0 +1,27 @@
+{
+  "source": "results/metrics.json",
+  "protocol": "m5-benchmark-v2",
+  "run": "v2.1",
+  "git_sha": "2a0a33787d77f0a8437c90994bf719a5cfcfd7ed",
+  "models_plotted": [
+    "naive",
+    "seasonal_naive",
+    "ma28",
+    "lightgbm"
+  ],
+  "best_test_model": "lightgbm",
+  "levels": [
+    "total",
+    "state",
+    "store",
+    "category",
+    "department",
+    "state_x_category",
+    "state_x_department",
+    "store_x_category",
+    "store_x_department",
+    "item",
+    "item_x_state",
+    "item_x_store"
+  ]
+}
