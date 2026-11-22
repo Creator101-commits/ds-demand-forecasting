@@ -1,0 +1,54 @@
+[project]
+name = "ds-demand-forecasting"
+version = "0.1.0"
+description = "Reproducible M5 demand forecasting benchmark with official WRMSSE."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Sreeharsha Kannegundla" }]
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "numpy>=2.1",
+    "pandas>=2.2",
+    "lightgbm>=4.6",
+    "statsmodels>=0.14",
+    "prophet>=1.1.5",
+    "typer>=0.12",
+]
+
+[project.scripts]
+demand = "demand.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[build-system]
+requires = ["uv_build>=0.8"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "demand"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=demand --cov-report=term-missing"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+branch = true
