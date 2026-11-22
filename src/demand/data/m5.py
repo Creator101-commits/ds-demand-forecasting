@@ -1,18 +1,23 @@
-"""Load M5 competition files into panels and metadata.
+"""Load M5 competition files into panels and metadata (protocol v2).
 
 Files (Kaggle competition ``m5-forecasting-accuracy``):
-- ``sales_train_validation.csv``: d_1..d_1913 for 30,490 series.
-- ``sales_train_evaluation.csv``: d_1914..d_1941 (evaluation ground truth).
-- ``calendar.csv``: day -> wm_yr_wk, weekday, month, events, SNAP flags.
+- ``sales_train_evaluation.csv``: d_1..d_1941 for 30,490 series. This is
+  the only sales file; the organizers' private-window truth
+  (d_1942..d_1969) comes from a separate verified file via
+  :func:`load_test_truth`.
+- ``calendar.csv``: d_1..d_1969 with real dates, week ids, events, SNAP.
 - ``sell_prices.csv``: weekly sell price per store x item.
 
-The two sales files are concatenated so the panel covers d_1..d_1941.
-Unit sales are kept as a float32 (n_series, n_days) matrix; a matching
-float32 price-per-day matrix supports dollar-sales weighting.
+The sales panel covers d_1..d_1941 while calendar and prices span
+d_1..d_1969, so ``price_days`` has one column per calendar day. Unit
+sales are float32; dollar-sales weights are computed in float64 from
+the weekly CSV prices via :func:`series_dollar_sales_window`.
 """
 
 from __future__ import annotations
 
+import hashlib
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,11 +25,12 @@ import numpy as np
 import pandas as pd
 
 ID_COLS = ["id", "item_id", "dept_id", "cat_id", "store_id", "state_id"]
-# The two sales files suffix ids differently (_validation/_evaluation),
-# so series identity is the five structural columns, not the id string.
+# The organizers' files carry no ``id`` column; series identity is the
+# five structural columns.
 SERIES_KEY = ["item_id", "dept_id", "cat_id", "store_id", "state_id"]
 CAL_COLUMNS = [
     "d",
+    "date",
     "wm_yr_wk",
     "wday",
     "month",
@@ -39,24 +45,73 @@ CAL_COLUMNS = [
 ]
 PRICE_COLS = ["store_id", "item_id", "wm_yr_wk", "sell_price"]
 
-# Frozen protocol day boundaries (1-based d_N, inclusive).
-TRAIN_END_DAY = 1885  # train: d_1..d_1885
-VAL_END_DAY = 1913  # validation: d_1886..d_1913
-TEST_END_DAY = 1941  # test: d_1914..d_1941
+COMPETITION_FILES = (
+    "sales_train_evaluation.csv",
+    "calendar.csv",
+    "sell_prices.csv",
+)
+
+# Protocol m5-benchmark-v2 day boundaries (1-based d_N, inclusive).
+# Train d_1..d_1913, validation d_1914..d_1941 (public leaderboard
+# window, origin d_1913), test d_1942..d_1969 (private leaderboard
+# window, origin d_1941) scored against the organizers' truth file.
+TRAIN_END_DAY = 1913
+VAL_END_DAY = 1941
+TEST_START_DAY = 1942
+TEST_END_DAY = 1969
+PANEL_END_DAY = 1941  # last day present in sales_train_evaluation.csv
 HORIZON = 28
-WEIGHT_WINDOW = 28  # last 28 days before each forecast origin
+WEIGHT_WINDOW = 28  # last 28 days ending at the forecast origin
+
+# Smoke mode shifts the whole protocol back 28 days so pseudo-test
+# d_1914..d_1941 comes from the panel and never touches official truth.
+SMOKE_TRAIN_END_DAY = 1885
+SMOKE_VAL_END_DAY = 1913
+
+TEST_TRUTH_SHA256 = (
+    "73773250dd7f7464f7a1bf3a54874dc7fc8cbb49885cd0bf1efe09bf48fd930d"
+)
+TEST_TRUTH_COLUMNS = SERIES_KEY + [f"d_{d}" for d in range(1942, 1970)]
+
+
+@dataclass(frozen=True)
+class Bounds:
+    """Frozen window boundaries in 1-based inclusive day numbers."""
+
+    train_end_day: int
+    val_end_day: int
+
+    @property
+    def test_start_day(self) -> int:
+        return self.val_end_day + 1
+
+    @property
+    def test_end_day(self) -> int:
+        return self.val_end_day + HORIZON
+
+
+FULL_BOUNDS = Bounds(TRAIN_END_DAY, VAL_END_DAY)
+SMOKE_BOUNDS = Bounds(SMOKE_TRAIN_END_DAY, SMOKE_VAL_END_DAY)
 
 
 @dataclass
 class M5Data:
-    """Loaded competition data with consistent day indexing."""
+    """Loaded competition data with consistent day indexing.
+
+    ``panel`` columns are days d_1..d_{PANEL_END_DAY}; ``price_days``,
+    ``calendar`` and ``price_weekly`` span d_1..d_1969. Panel column j
+    and calendar row j both refer to day d_{j+1}.
+    """
 
     ids: pd.DataFrame  # ID_COLS, one row per series, panel row order
-    panel: np.ndarray  # (n_series, n_days) float32 unit sales
-    price_days: np.ndarray  # (n_series, n_days) float32 sell price per day
+    panel: np.ndarray  # (n_series, PANEL_END_DAY) float32 unit sales
+    price_days: np.ndarray  # (n_series, 1969) float32 sell price per day
+    price_weekly: np.ndarray  # (n_series, n_weeks) float64 weekly price
+    week_cols: list[int]  # wm_yr_wk values, sorted, aligned to price_weekly
+    day_week_pos: np.ndarray  # (1969,) int32 week position per calendar day
     calendar: pd.DataFrame
     prices: pd.DataFrame
-    day_cols: list[str] = field(default_factory=list)
+    day_cols: list[str] = field(default_factory=list)  # panel day cols
 
     @property
     def n_series(self) -> int:
@@ -65,6 +120,10 @@ class M5Data:
     @property
     def n_days(self) -> int:
         return int(self.panel.shape[1])
+
+    @property
+    def n_calendar_days(self) -> int:
+        return int(self.calendar.shape[0])
 
 
 def _day_columns(frame: pd.DataFrame) -> list[str]:
@@ -78,99 +137,67 @@ def _day_num(day_col: str) -> int:
     return int(day_col.split("_")[1])
 
 
-def load_m5(directory: Path, *, boundary_day: int = VAL_END_DAY) -> M5Data:
-    """Load the competition CSVs into one panel.
+def sha256_file(path: Path) -> str:
+    """Hex sha256 of a file, streamed."""
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
-    ``sales_train_validation.csv`` covers d_1..d_1913 and
-    ``sales_train_evaluation.csv`` covers d_1..d_1941, so the evaluation
-    file's first 1,913 day columns duplicate the validation file. The
-    panel takes days through ``boundary_day`` from the validation file
-    and the later days from the evaluation file, joined on series id.
-    ``boundary_day`` defaults to the frozen protocol boundary.
-    """
-    val = pd.read_csv(directory / "sales_train_validation.csv")
-    ev = pd.read_csv(directory / "sales_train_evaluation.csv")
-    val_days = _day_columns(val)
-    ev_days = _day_columns(ev)
-    train_days = [d for d in val_days if _day_num(d) <= boundary_day]
-    test_days = [d for d in ev_days if _day_num(d) > boundary_day]
-    ev_max = max(_day_num(d) for d in ev_days)
-    if len(test_days) != ev_max - boundary_day:
+
+def load_m5(directory: Path) -> M5Data:
+    """Load the competition CSVs into one panel covering d_1..d_1941."""
+    sales_path = directory / "sales_train_evaluation.csv"
+    sales = pd.read_csv(sales_path)
+    day_cols = _day_columns(sales)
+    if not day_cols or _day_num(day_cols[-1]) != PANEL_END_DAY:
         raise ValueError(
-            f"expected {ev_max - boundary_day} eval days after "
-            f"d_{boundary_day}, found {len(test_days)}"
+            f"sales_train_evaluation.csv must cover d_1..d_{PANEL_END_DAY}"
         )
-    day_cols = train_days + test_days
-    if len(day_cols) != ev_max:
-        raise ValueError(
-            f"panel has {len(day_cols)} day columns, expected d_1..d_{ev_max}"
-        )
-
-    wide = val[ID_COLS + train_days].merge(
-        ev[SERIES_KEY + test_days],
-        left_on=SERIES_KEY,
-        right_on=SERIES_KEY,
-        how="inner",
-        validate="1:1",
-    )
-    ids = wide[ID_COLS].reset_index(drop=True)
-    panel = wide[day_cols].to_numpy(dtype=np.float32)
-
-    # Spot-check that the evaluation file's overlapping days agree with
-    # the validation file on a sample of series.
-    overlap = [d for d in ev_days if _day_num(d) <= boundary_day]
-    if overlap:
-        val_idx = val.set_index(SERIES_KEY)
-        ev_idx = ev.set_index(SERIES_KEY)
-        sample_keys = list(val_idx.index[:500])
-        val_sub = val_idx.loc[sample_keys, overlap]
-        ev_sub = ev_idx.loc[sample_keys, overlap]
-        if not np.array_equal(
-            ev_sub.to_numpy(dtype=np.float32),
-            val_sub.to_numpy(dtype=np.float32),
-        ):
-            raise ValueError(
-                "sales_train_evaluation.csv disagrees with "
-                "sales_train_validation.csv on overlapping days"
-            )
+    ids = sales[ID_COLS].reset_index(drop=True)
+    panel = sales[day_cols].to_numpy(dtype=np.float32)
 
     calendar = pd.read_csv(directory / "calendar.csv", usecols=CAL_COLUMNS)
+    cal_days = calendar["d"].tolist()
+    if len(cal_days) != TEST_END_DAY or cal_days[0] != "d_1":
+        raise ValueError(
+            f"calendar.csv must cover d_1..d_{TEST_END_DAY}, got {len(cal_days)} rows"
+        )
     prices = pd.read_csv(directory / "sell_prices.csv", usecols=PRICE_COLS)
-    prices["sell_price"] = prices["sell_price"].astype(np.float32)
 
-    price_days = _price_day_matrix(ids, prices, calendar, day_cols)
+    price_days, price_weekly, week_cols, day_week_pos = _price_matrices(
+        ids, prices, calendar, cal_days
+    )
     return M5Data(
         ids=ids,
         panel=panel,
         price_days=price_days,
+        price_weekly=price_weekly,
+        week_cols=week_cols,
+        day_week_pos=day_week_pos,
         calendar=calendar,
         prices=prices,
         day_cols=day_cols,
     )
 
 
-def _price_day_matrix(
+def _price_matrices(
     ids: pd.DataFrame,
     prices: pd.DataFrame,
     calendar: pd.DataFrame,
-    day_cols: list[str],
-) -> np.ndarray:
-    """(n_series, n_days) sell price per day via weekly price lookup."""
+    cal_days: list[str],
+) -> tuple[np.ndarray, np.ndarray, list[int], np.ndarray]:
+    """Build price-per-day (float32), weekly price (float64), week map."""
     n_series = len(ids)
-    n_days = len(day_cols)
-    out = np.zeros((n_series, n_days), dtype=np.float32)
 
-    cal_wk = calendar.set_index("d")["wm_yr_wk"]
-    day_weeks = np.array([cal_wk[d] for d in day_cols])
-
-    # Pivot weekly prices to (series, week) then index by each day's week.
     series_idx = pd.Series(np.arange(n_series), name="series_idx")
     key = ids[["store_id", "item_id"]].copy()
     key["series_idx"] = series_idx.to_numpy()
     merged = prices.merge(key, on=["store_id", "item_id"], how="inner")
-    week_cols = np.sort(prices["wm_yr_wk"].unique())
+    week_cols = sorted(int(w) for w in prices["wm_yr_wk"].unique())
     week_pos = {w: i for i, w in enumerate(week_cols)}
-    wide = (
+    weekly = (
         merged.pivot_table(
             index="series_idx",
             columns="wm_yr_wk",
@@ -178,35 +205,97 @@ def _price_day_matrix(
             aggfunc="first",
         )
         .reindex(index=np.arange(n_series), columns=week_cols)
-        .to_numpy(dtype=np.float32)
+        .to_numpy(dtype=np.float64)
     )
-    day_week_pos = np.array([week_pos[w] for w in day_weeks])
-    out[:, :] = wide[:, day_week_pos]
-    # Missing (series, week) means the product was not sold that week;
-    # units are zero there anyway, so NaN -> 0 is safe for weighting.
-    return np.nan_to_num(out, nan=0.0)
+    # (series, week) with no price row means the product was not sold
+    # that week; its unit sales are zero there, so 0 is safe.
+    weekly = np.nan_to_num(weekly, nan=0.0)
+
+    cal_wk = calendar.set_index("d")["wm_yr_wk"]
+    day_weeks = np.array([int(cal_wk[d]) for d in cal_days])
+    day_week_pos = np.array([week_pos[w] for w in day_weeks], dtype=np.int32)
+
+    price_days = weekly[:, day_week_pos].astype(np.float32)
+    return price_days, weekly, week_cols, day_week_pos
+
+
+def series_dollar_sales_window(
+    data: M5Data, day_start_idx: int, day_end_idx: int
+) -> np.ndarray:
+    """Per-series dollar sales over calendar days [start, end] inclusive.
+
+    Indices are 0-based calendar-day positions (day d_{i+1}); the window
+    must lie inside the sales panel. Computed in float64 from the CSV
+    weekly prices, matching how the organizers' weight files were built.
+    """
+    if day_end_idx >= data.panel.shape[1]:
+        raise ValueError("dollar-sales window extends beyond the sales panel")
+    weeks, inverse = np.unique(
+        data.day_week_pos[day_start_idx : day_end_idx + 1], return_inverse=True
+    )
+    day_idx = np.arange(day_start_idx, day_end_idx + 1)
+    out = np.zeros(data.n_series, dtype=np.float64)
+    for i, w in enumerate(weeks):
+        cols = day_idx[inverse == i]
+        sales_w = data.panel[:, cols].astype(np.float64).sum(axis=1)
+        out += sales_w * data.price_weekly[:, int(w)]
+    return out
 
 
 def day_index(day_col: str) -> int:
-    """0-based position of ``d_N`` in the day_cols ordering."""
+    """0-based position of ``d_N`` in day ordering."""
     return int(day_col.split("_")[1]) - 1
 
 
-def split_indices() -> dict[str, tuple[int, int]]:
-    """Frozen day windows as (start, end) 0-based inclusive indices."""
+def window_indices(bounds: Bounds) -> dict[str, tuple[int, int]]:
+    """0-based inclusive (start, end) panel indices for train/validation."""
+    t, v = bounds.train_end_day, bounds.val_end_day
     return {
-        "train": (0, TRAIN_END_DAY - 1),
-        "validation": (TRAIN_END_DAY, VAL_END_DAY - 1),
-        "test": (VAL_END_DAY, TEST_END_DAY - 1),
+        "train": (0, t - 1),
+        "validation": (t, v - 1),
     }
 
 
-def series_dollar_sales(
-    data: M5Data, day_start: int, day_end: int
-) -> np.ndarray:
-    """Per-series dollar sales over days [day_start, day_end] inclusive."""
-    sl = slice(day_start, day_end + 1)
-    return np.asarray(
-        (data.panel[:, sl] * data.price_days[:, sl]).sum(axis=1),
-        dtype=np.float64,
+def origin_indices(bounds: Bounds) -> dict[str, int]:
+    """0-based forecast origins: last observed day before each window."""
+    t, v = bounds.train_end_day, bounds.val_end_day
+    return {
+        "validation": t - 1,  # day d_T predicts d_{T+1}..d_{T+28}
+        "test": v - 1,  # day d_V predicts d_{V+1}..d_{V+28}
+    }
+
+
+def load_test_truth(
+    path: Path, ids: pd.DataFrame
+) -> tuple[np.ndarray, float]:
+    """Load the organizers' private-window truth (d_1942..d_1969).
+
+    Verifies the file sha256, column layout, and a 1:1 join on the five
+    structural key columns with no missing keys. Returns the (n_series,
+    28) float32 panel in ``ids`` row order plus the epoch at which the
+    file was first read; callers must persist their plan before calling
+    this so ``first_test_read_epoch`` postdates ``card_write_epoch``.
+    """
+    epoch = time.time()
+    actual = sha256_file(path)
+    if actual != TEST_TRUTH_SHA256:
+        raise ValueError(
+            f"test truth sha256 mismatch: {actual} != {TEST_TRUTH_SHA256}"
+        )
+    truth = pd.read_csv(path)
+    if list(truth.columns) != TEST_TRUTH_COLUMNS:
+        raise ValueError("test truth columns do not match d_1942..d_1969 layout")
+    day_cols = [c for c in truth.columns if c.startswith("d_")]
+    merged = ids[SERIES_KEY].merge(
+        truth,
+        on=SERIES_KEY,
+        how="left",
+        validate="1:1",
+        indicator=True,
     )
+    if not (merged["_merge"] == "both").all():
+        raise ValueError("test truth is missing series keys")
+    if merged[day_cols].isna().any().any():
+        raise ValueError("test truth contains missing values")
+    panel = merged[day_cols].to_numpy(dtype=np.float32)
+    return panel, epoch
