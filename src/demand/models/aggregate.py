@@ -40,24 +40,32 @@ def sarima_forecast(train_series: np.ndarray, horizon: int) -> np.ndarray:
     return np.asarray(np.clip(np.asarray(fc, dtype=np.float64), 0.0, None))
 
 
-def prophet_forecast(train_series: np.ndarray, horizon: int) -> np.ndarray:
+def prophet_frame(
+    train_series: np.ndarray, dates: pd.Series
+) -> pd.DataFrame:
+    """Prophet training frame with the real M5 calendar dates."""
+    return pd.DataFrame(
+        {"ds": pd.to_datetime(dates.iloc[: len(train_series)]), "y": train_series.astype(float)}
+    )
+
+
+def prophet_forecast(
+    train_series: np.ndarray,
+    horizon: int,
+    dates: pd.Series,
+    future_dates: pd.Series,
+) -> np.ndarray:
     """Prophet daily forecast with weekly + yearly seasonality."""
     from prophet import Prophet  # noqa: PLC0415
 
-    n = len(train_series)
-    df = pd.DataFrame(
-        {
-            "ds": pd.date_range("2011-01-01", periods=n, freq="D"),
-            "y": train_series.astype(float),
-        }
-    )
+    df = prophet_frame(train_series, dates)
     m = Prophet(
         yearly_seasonality=True,
         weekly_seasonality=True,
         daily_seasonality=False,
     )
     m.fit(df)
-    future = m.make_future_dataframe(periods=horizon, freq="D")
+    future = pd.DataFrame({"ds": pd.to_datetime(future_dates)})
     fc = m.predict(future)
     return np.asarray(
         np.clip(fc["yhat"].to_numpy()[-horizon:], 0.0, None), dtype=np.float64
@@ -68,12 +76,26 @@ def aggregate_forecasts(
     level: str,
     panel: np.ndarray,
     ids: pd.DataFrame,
-    train_end_idx: int,
+    origin_idx: int,
     horizon: int,
     method: str,
+    calendar: pd.DataFrame,
 ) -> tuple[np.ndarray, list[str]]:
-    """Fit one aggregate model per series of a level and forecast."""
-    agg, names = aggregate_panel(panel[:, : train_end_idx + 1], ids, level)
-    fn = sarima_forecast if method == "sarima" else prophet_forecast
-    preds = np.stack([fn(s, horizon) for s in agg], axis=0)
-    return preds.astype(np.float32), names
+    """Fit one aggregate model per series of a level and forecast.
+
+    ``panel`` is the full item-store panel; training uses days
+    ``0..origin_idx`` and Prophet gets the real ``date`` column for
+    both the training span and the horizon days after the origin.
+    """
+    agg, names = aggregate_panel(panel[:, : origin_idx + 1], ids, level)
+    dates = calendar["date"]
+    future_dates = dates.iloc[origin_idx + 1 : origin_idx + 1 + horizon]
+    preds = []
+    for s in agg:
+        if method == "sarima":
+            preds.append(sarima_forecast(s, horizon))
+        else:
+            preds.append(
+                prophet_forecast(s, horizon, dates, future_dates)
+            )
+    return np.stack(preds, axis=0).astype(np.float32), names
