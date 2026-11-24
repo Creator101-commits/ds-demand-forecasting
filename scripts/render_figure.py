@@ -363,11 +363,41 @@ def check_legend_pixels(fig: plt.Figure, path: Path) -> list[str]:
         y0, y1 = max(0, int(H - bb.y1)), min(H, int(H - bb.y0) + 1)
         if x1 <= x0 or y1 <= y0:
             continue
-        region = colored[y0:y1, x0:x1]
-        fs = leg._fontsize or matplotlib.rcParams["legend.fontsize"]
-        cut = int((leg.handlelength + leg.handletextpad) * fs * (DPI / 72) + 10)
-        cut = min(cut, region.shape[1] // 2)
-        frac = region[:, cut:].mean() if region[:, cut:].size else 0.0
+        region = colored[y0:y1, x0:x1].copy()
+        # mask every legend handle swatch (any column) so only data-colored
+        # bleed through the legend body counts; swatches live in
+        # DrawingArea children of the legend's offset box
+        swatches = []
+
+        def _collect(o):
+            if type(o).__name__ == "DrawingArea":
+                swatches.append(o)
+                return
+            try:
+                children = o.get_visible_children()
+            except Exception:
+                children = []
+            for c in children:
+                _collect(c)
+
+        box = getattr(leg, "_legend_handle_box", None)
+        if box is not None:
+            _collect(box)
+        for sw in swatches:
+            try:
+                hb = sw.get_window_extent(fig.canvas.get_renderer())
+            except Exception:
+                continue
+            if not all(np.isfinite([hb.x0, hb.x1, hb.y0, hb.y1])):
+                continue
+            pad = 3
+            hx0, hx1 = int(hb.x0) - x0 - pad, int(hb.x1) - x0 + pad
+            hy0, hy1 = int(H - hb.y1) - y0 - pad, int(H - hb.y0) - y0 + pad
+            rx0, rx1 = max(0, hx0), min(region.shape[1], hx1)
+            ry0, ry1 = max(0, hy0), min(region.shape[0], hy1)
+            if rx1 > rx0 and ry1 > ry0:
+                region[ry0:ry1, rx0:rx1] = False
+        frac = region.mean() if region.size else 0.0
         if frac > 0.015:
             out.append(f"legend body ~{frac:.1%} covered by data color")
     return out
