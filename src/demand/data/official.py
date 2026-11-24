@@ -38,10 +38,8 @@ LEVEL_IDS = [f"Level{i}" for i in range(1, 13)]
 LEVEL_NAMES = [f"L{i}" for i in range(1, 13)]
 SCORE_TOL = 1e-5
 WEIGHT_DOLLAR_TOL = 0.011
-# The organizers' stored weight column is only self-consistent to
-# ~2.2e-6 relative (weight vs Dollar_Sales/level_total recomputed from
-# their own file); 1e-5 sits above that rounding noise while still
-# catching window or price bugs, which produce O(1) diffs.
+# Their stored weights are self-consistent only to ~2.2e-6 relative;
+# 1e-5 sits above that rounding noise but catches O(1) window/price bugs.
 WEIGHT_REL_TOL = 1e-5
 
 

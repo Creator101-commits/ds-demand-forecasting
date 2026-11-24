@@ -149,7 +149,6 @@ def test_series_dollar_sales_window(tmp_path: Path) -> None:
     dollars = series_dollar_sales_window(data, 0, 6)
     expected = data.panel[:, :7].sum(axis=1) * 2.5
     np.testing.assert_allclose(dollars, expected, rtol=1e-5)
-    # A window reaching past the panel must fail.
     with pytest.raises(ValueError, match="beyond"):
         series_dollar_sales_window(data, 0, PANEL_END_DAY)
 
