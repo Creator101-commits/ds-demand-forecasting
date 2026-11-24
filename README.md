@@ -105,6 +105,28 @@ reproduces the published table on every level L1 to L12 and the
 average, for both baselines (max abs diff 4.2e-15), the
 test-truth sha256 matches, and `ordering_ok` is true.
 
+![M5 demand forecasting results: WRMSSE validation vs test, per-level breakdown, aggregate RMSSE by state and level, and seed spread](image.png)
+
+### What the figure shows
+
+- (a) Validation vs frozen test: LightGBM's test WRMSSE is 0.6211
+  [0.5958, 0.6944], far below seasonal naive (0.8470), MA28 (0.9462)
+  and Naive (1.7520); light bars are validation, dark bars test.
+- (b) Per-level test WRMSSE: LightGBM is the lowest of the four models
+  at all 12 aggregation levels, from Total (0.32) to Item
+  (0.99), while Naive stays above 1.25 everywhere.
+- (c) Aggregate RMSSE by state: LightGBM bottom-up is lowest in TX
+  (0.485) and WI (0.497); Prophet edges it in CA (0.367 vs 0.369),
+  and SARIMA is worst in every state (up to 0.829 in WI).
+- (d) Aggregate mean RMSSE: LightGBM bottom-up is lowest at all three
+  levels (Total 0.320, State 0.450, Store 0.515).
+- (e) Per-seed spread: the three single-seed forecasts score 0.6237,
+  0.6244 and 0.6167, and the seed-averaged forecast enters the table
+  at 0.6211.
+
+The frozen 3-seed LightGBM forecast reaches 0.6211 test WRMSSE,
+beating seasonal naive (0.8470) by 0.23 and every aggregate baseline.
+
 ### Test WRMSSE (private window d_1942..d_1969)
 
 | Model | WRMSSE | 95% CI | MAE | Bias |

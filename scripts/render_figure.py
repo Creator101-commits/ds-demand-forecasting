@@ -1,8 +1,9 @@
-"""Render image.png from curated results/metrics.json only.
+"""Render image.png from the committed results/metrics.json only.
 
-Panels: validation vs test WRMSSE per model, the 12-level WRMSSE
-breakdown for the best model, aggregate-level RMSSE comparison
-(SARIMA/Prophet/LightGBM bottom-up), and LightGBM seed spread.
+Panels: (a) validation vs frozen-test WRMSSE per model, (b) per-level test
+WRMSSE for all four models across the 12 aggregation levels, (c) aggregate
+RMSSE by state for SARIMA/Prophet/LightGBM bottom-up, (d) aggregate-level
+mean RMSSE comparison, (e) LightGBM per-seed test WRMSSE spread.
 Requires Matplotlib; run with
 `uv run --with matplotlib python scripts/render_figure.py`.
 Set DEMAND_RESULTS_DIR to render from a different results directory.
@@ -12,17 +13,63 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
+import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.ticker as mticker  # noqa: E402
+import numpy as np  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 RESULTS = Path(os.environ.get("DEMAND_RESULTS_DIR", REPO / "results"))
+OUT = REPO / "image.png"
 
+INK = "#1F2A37"
+BLUE = "#3B6EA8"
+TEAL = "#2A9D8F"
+AMBER = "#E9A23B"
+CORAL = "#D1495B"
+GRAY = "#9AA5B1"
+GRID = "#EEF0F2"
+SPINE = "#B8BEC6"
+TICK_LABEL = "#4A5361"
+
+plt.rcParams.update(
+    {
+        "font.family": "serif",
+        "font.serif": ["cmr10"],
+        "mathtext.fontset": "cm",
+        "axes.formatter.use_mathtext": True,
+        "axes.unicode_minus": False,
+        "figure.facecolor": "white",
+        "savefig.facecolor": "white",
+        "axes.titlesize": 11,
+        "axes.labelsize": 10,
+        "xtick.labelsize": 8.5,
+        "ytick.labelsize": 8.5,
+        "legend.fontsize": 8,
+        "legend.frameon": False,
+        "text.color": INK,
+        "axes.labelcolor": INK,
+        "axes.edgecolor": SPINE,
+        "axes.linewidth": 0.8,
+        "xtick.color": SPINE,
+        "ytick.color": SPINE,
+        "xtick.labelcolor": TICK_LABEL,
+        "ytick.labelcolor": TICK_LABEL,
+        "xtick.direction": "out",
+        "ytick.direction": "out",
+        "xtick.major.size": 3,
+        "ytick.major.size": 3,
+        "xtick.major.width": 0.6,
+        "ytick.major.width": 0.6,
+    }
+)
+
+DPI = 150
 MODEL_ORDER = ["naive", "seasonal_naive", "ma28", "lightgbm"]
 MODEL_LABELS = {
     "naive": "Naive",
@@ -30,186 +77,450 @@ MODEL_LABELS = {
     "ma28": "MA28",
     "lightgbm": "LightGBM",
 }
-RUN_LABEL = "v2.1"
-COLORS = {
-    "naive": "#9e9e9e",
-    "seasonal_naive": "#1976d2",
-    "ma28": "#f9a825",
-    "lightgbm": "#2e7d32",
-    "sarima": "#d32f2f",
-    "prophet": "#7b1fa2",
-    "lightgbm_bottomup": "#2e7d32",
+MODEL_COLORS = {
+    "naive": GRAY,
+    "seasonal_naive": TEAL,
+    "ma28": AMBER,
+    "lightgbm": BLUE,
 }
+AGG_METHODS = ["sarima", "prophet", "lightgbm_bottomup"]
+AGG_LABELS = ["SARIMA", "Prophet", "LightGBM\nbottom-up"]
+AGG_COLORS = [CORAL, AMBER, BLUE]
 LEVEL_ORDER = [
     "total", "state", "store", "category", "department",
     "state_x_category", "state_x_department", "store_x_category",
     "store_x_department", "item", "item_x_state", "item_x_store",
 ]
+LEVEL_LABELS = [
+    "Total", "State", "Store", "Cat.", "Dept.", r"St.$\times$Cat.",
+    r"St.$\times$Dept.", r"Sto.$\times$Cat.", r"Sto.$\times$Dept.",
+    "Item", r"Item$\times$St.", r"Item$\times$Sto.",
+]
 
 
-def _load() -> dict:
-    return json.loads((RESULTS / "metrics.json").read_text())
+def _fmt2(x: float, _pos: int) -> str:
+    """Up to 2 decimals inside mathtext; large values as integers."""
+    if x == 0:
+        return "$0$"
+    if abs(x) >= 1000:
+        return f"${x:.0f}$"
+    s = f"{x:.2f}".rstrip("0").rstrip(".")
+    if s in ("", "-0"):
+        return "$0$"
+    return f"${s}$"
 
 
-def _git_sha() -> str:
-    manifest = RESULTS / "manifest.json"
-    if manifest.exists():
-        return str(json.loads(manifest.read_text()).get("git_sha", "unknown"))
-    return "unknown"
+CATEGORICAL: list[tuple[plt.Axes, str, list[str]]] = []
+
+
+def style(
+    ax: plt.Axes,
+    letter: str,
+    title: str,
+    xlabel: str | None = None,
+    ylabel: str | None = None,
+    grid: bool = True,
+) -> None:
+    ax.set_title(f"({letter}) {title}", loc="left", fontsize=11, color=INK)
+    if xlabel is not None:
+        ax.set_xlabel(xlabel, fontsize=10, color=INK)
+    if ylabel is not None:
+        ax.set_ylabel(ylabel, fontsize=10, color=INK)
+    for name in ("top", "right"):
+        ax.spines[name].set_visible(False)
+    for name in ("left", "bottom"):
+        ax.spines[name].set_visible(True)
+        ax.spines[name].set_color(SPINE)
+        ax.spines[name].set_linewidth(0.8)
+    ax.tick_params(
+        axis="both",
+        direction="out",
+        length=3,
+        width=0.6,
+        color=SPINE,
+        labelcolor=TICK_LABEL,
+        labelsize=8.5,
+    )
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(_fmt2))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(_fmt2))
+    if grid:
+        ax.grid(axis="y", color=GRID, linewidth=0.6)
+        ax.set_axisbelow(True)
+
+
+def cat(
+    ax: plt.Axes,
+    axis: str,
+    positions: list[int] | range,
+    labels: list[str],
+    rotation: float = 0,
+    ha: str | None = None,
+    fontsize: float | None = None,
+) -> None:
+    """Categorical ticks: FixedLocator + FixedFormatter applied AFTER
+    style(), so the numeric FuncFormatter cannot clobber the labels.
+    Rotation/alignment/fontsize are set on the label Texts directly."""
+    labels = list(labels)
+    if axis == "x":
+        ax.set_xticks(positions)
+        ax.xaxis.set_major_locator(mticker.FixedLocator(positions))
+        ax.xaxis.set_major_formatter(mticker.FixedFormatter(labels))
+        ax.xaxis.set_minor_locator(mticker.NullLocator())
+        texts = ax.get_xticklabels()
+    else:
+        ax.set_yticks(positions)
+        ax.yaxis.set_major_locator(mticker.FixedLocator(positions))
+        ax.yaxis.set_major_formatter(mticker.FixedFormatter(labels))
+        ax.yaxis.set_minor_locator(mticker.NullLocator())
+        texts = ax.get_yticklabels()
+    for t in texts:
+        if rotation:
+            t.set_rotation(rotation)
+        if ha:
+            t.set_ha(ha)
+        if fontsize:
+            t.set_fontsize(fontsize)
+    CATEGORICAL.append((ax, axis, labels))
+
+
+def verify_categories() -> None:
+    bad = []
+    for ax, axis, expected in CATEGORICAL:
+        got = [
+            t.get_text()
+            for t in (ax.get_xticklabels() if axis == "x" else ax.get_yticklabels())
+        ]
+        if got != expected:
+            bad.append((axis, expected, got))
+    CATEGORICAL.clear()
+    if bad:
+        details = "; ".join(f"{a} expected={e} got={g}" for a, e, g in bad)
+        raise RuntimeError(f"categorical tick labels mismatch: {details}")
+
+
+def _all_texts(fig: plt.Figure) -> list[plt.Text]:
+    items = []
+    for ax in fig.axes:
+        cand = [ax.title, ax.xaxis.label, ax.yaxis.label]
+        cand += list(ax.texts)
+        for axis in (ax.xaxis, ax.yaxis):
+            try:
+                ticks = axis._update_ticks()  # noqa: SLF001
+            except Exception:
+                ticks = []
+            for tick in ticks:
+                lab = tick.label1
+                if lab.get_text():
+                    cand.append(lab)
+        leg = ax.get_legend()
+        if leg is not None:
+            cand += list(leg.get_texts())
+        for t in cand:
+            try:
+                if t.get_text() and t.get_visible():
+                    items.append(t)
+            except Exception:
+                pass
+    return items
+
+
+def check_text_overlap(fig: plt.Figure) -> list[str]:
+    fig.canvas.draw()
+    fig.canvas.draw()
+    ren = fig.canvas.get_renderer()
+    W, H = fig.canvas.get_width_height()
+    boxes = []
+    for t in _all_texts(fig):
+        bb = t.get_window_extent(ren)
+        boxes.append((t.get_text()[:40], bb))
+    problems = []
+    for i, (s1, b1) in enumerate(boxes):
+        if b1.x0 < -1 or b1.y0 < -1 or b1.x1 > W + 1 or b1.y1 > H + 1:
+            problems.append(f"OUT-OF-FIGURE {s1!r} bbox={b1}")
+        for s2, b2 in boxes[i + 1 :]:
+            ix = min(b1.x1, b2.x1) - max(b1.x0, b2.x0)
+            iy = min(b1.y1, b2.y1) - max(b1.y0, b2.y0)
+            if ix > 1.5 and iy > 1.5:
+                inter = ix * iy
+                small = min(b1.width * b1.height, b2.width * b2.height)
+                if inter > max(8.0, 0.10 * small):
+                    problems.append(f"OVERLAP {s1!r} x {s2!r} area={inter:.0f}px2")
+    return problems
+
+
+def check_legend_data(fig: plt.Figure) -> list[str]:
+    """Count data markers/vertices falling inside legend boxes."""
+    fig.canvas.draw()
+    fig.canvas.draw()
+    ren = fig.canvas.get_renderer()
+    out = []
+    for ax in fig.axes:
+        leg = ax.get_legend()
+        if leg is None:
+            continue
+        lb = leg.get_window_extent(ren)
+        covered = 0
+        total = 0
+        for coll in ax.collections:
+            offs = coll.get_offsets()
+            if len(offs) == 0 or len(offs) > 2000:
+                continue
+            pts = ax.transData.transform(offs)
+            inside = (
+                (pts[:, 0] > lb.x0)
+                & (pts[:, 0] < lb.x1)
+                & (pts[:, 1] > lb.y0)
+                & (pts[:, 1] < lb.y1)
+            ).sum()
+            covered += int(inside)
+            total += len(offs)
+        for line in ax.lines:
+            if line.get_transform() != ax.transData:
+                continue
+            try:
+                pts = ax.transData.transform(line.get_path().vertices)
+            except Exception:
+                continue
+            inside = (
+                (pts[:, 0] > lb.x0)
+                & (pts[:, 0] < lb.x1)
+                & (pts[:, 1] > lb.y0)
+                & (pts[:, 1] < lb.y1)
+            ).sum()
+            covered += int(inside)
+            total += len(pts)
+        for patch in ax.patches:
+            try:
+                pb = patch.get_window_extent(ren)
+            except Exception:
+                continue
+            if pb.x0 < lb.x1 and pb.x1 > lb.x0 and pb.y0 < lb.y1 and pb.y1 > lb.y0:
+                covered += 1
+            total += 1
+        if covered:
+            out.append(f"legend covers ~{covered}/{total} data items")
+    return out
+
+
+def check_annotation_data(fig: plt.Figure) -> list[str]:
+    """In-axes annotations vs plotted data."""
+    fig.canvas.draw()
+    fig.canvas.draw()
+    ren = fig.canvas.get_renderer()
+    out = []
+    for ax in fig.axes:
+        for t in ax.texts:
+            if not t.get_text() or not t.get_visible():
+                continue
+            tb = t.get_window_extent(ren)
+            hits = 0
+            for line in ax.lines:
+                if line.get_transform() != ax.transData:
+                    continue
+                pts = ax.transData.transform(line.get_path().vertices)
+                hits += int(
+                    (
+                        (pts[:, 0] > tb.x0)
+                        & (pts[:, 0] < tb.x1)
+                        & (pts[:, 1] > tb.y0)
+                        & (pts[:, 1] < tb.y1)
+                    ).sum()
+                )
+            for coll in ax.collections:
+                offs = coll.get_offsets()
+                if len(offs) == 0 or len(offs) > 5000:
+                    continue
+                pts = ax.transData.transform(offs)
+                hits += int(
+                    (
+                        (pts[:, 0] > tb.x0)
+                        & (pts[:, 0] < tb.x1)
+                        & (pts[:, 1] > tb.y0)
+                        & (pts[:, 1] < tb.y1)
+                    ).sum()
+                )
+            if hits:
+                out.append(f"'{t.get_text()}' overlaps ~{hits} data pts")
+    return out
+
+
+def check_legend_pixels(fig: plt.Figure, path: Path) -> list[str]:
+    """Saturated (colored) data pixels showing through legend boxes."""
+    if not path.exists():
+        return []
+    img = plt.imread(path)
+    H, W = img.shape[:2]
+    rgb = img[..., :3]
+    spread = rgb.max(axis=2) - rgb.min(axis=2)
+    colored = spread > 0.18
+    out = []
+    for ax in fig.axes:
+        leg = ax.get_legend()
+        if leg is None:
+            continue
+        bb = leg.get_window_extent(fig.canvas.get_renderer())
+        x0, x1 = int(bb.x0), min(int(bb.x1) + 1, W)
+        y0, y1 = max(0, int(H - bb.y1)), min(H, int(H - bb.y0) + 1)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        region = colored[y0:y1, x0:x1]
+        fs = leg._fontsize or matplotlib.rcParams["legend.fontsize"]
+        cut = int((leg.handlelength + leg.handletextpad) * fs * (DPI / 72) + 10)
+        cut = min(cut, region.shape[1] // 2)
+        frac = region[:, cut:].mean() if region[:, cut:].size else 0.0
+        if frac > 0.015:
+            out.append(f"legend body ~{frac:.1%} covered by data color")
+    return out
+
+
+def finish(fig: plt.Figure, out: Path) -> None:
+    """Verify categorical labels, save, then fail on any check violation."""
+    fig.canvas.draw()
+    fig.canvas.draw()
+    verify_categories()
+    fig.savefig(out, dpi=DPI, facecolor="white")
+    problems: list[str] = []
+    problems += check_text_overlap(fig)
+    problems += check_legend_data(fig)
+    problems += check_annotation_data(fig)
+    problems += check_legend_pixels(fig, out)
+    plt.close(fig)
+    if problems:
+        for p in problems[:30]:
+            print(f"  CHECK FAIL: {p}", file=sys.stderr)
+        sys.exit(f"figure checks failed for {out.name}: {len(problems)} problem(s)")
+    print("wrote", out)
 
 
 def main() -> None:
-    metrics = _load()
+    metrics = json.loads((RESULTS / "metrics.json").read_text())
     val = metrics["validation"]
     test = metrics["test"]
-
-    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
-    fig.suptitle(
-        "M5 demand forecasting: official WRMSSE "
-        f"(protocol {metrics['protocol']}, run {RUN_LABEL}, "
-        f"git {_git_sha()[:7]})",
-        fontsize=13,
-    )
-
-    # Panel 1: validation vs test WRMSSE per headline model.
-    ax = axes[0, 0]
     models = [m for m in MODEL_ORDER if m in test]
+
+    fig, axes = plt.subplots(2, 3, figsize=(13.0, 6.4), dpi=DPI, layout="constrained")
+    (a1, a2, a3), (a4, a5, _a6) = axes
+
+    # (a) Validation vs frozen-test WRMSSE per model.
     x = np.arange(len(models))
-    width = 0.38
+    width = 0.36
     for i, m in enumerate(models):
         v = val.get(m, {}).get("wrmsse", np.nan)
         t = test[m]["wrmsse"]
         ci = test[m]["ci"]
-        ax.bar(
-            x[i] - width / 2, v, width,
-            color=COLORS[m], alpha=0.45,
-            label="validation" if i == 0 else None,
-        )
-        ax.bar(
-            x[i] + width / 2, t, width,
-            color=COLORS[m],
-            label="test" if i == 0 else None,
-        )
-        ax.errorbar(
+        a1.bar(x[i] - width / 2, v, width, color=MODEL_COLORS[m], alpha=0.4)
+        a1.bar(x[i] + width / 2, t, width, color=MODEL_COLORS[m])
+        a1.errorbar(
             x[i] + width / 2, t,
             yerr=[[t - ci["ci_low"]], [ci["ci_high"] - t]],
-            fmt="none", ecolor="black", capsize=3,
+            fmt="none", ecolor=INK, capsize=3, elinewidth=0.8,
         )
-        ax.text(
-            x[i] + width / 2, ci["ci_high"], f"{t:.3f}",
-            ha="center", va="bottom", fontsize=8,
+        a1.text(
+            x[i] + width / 2, ci["ci_high"], f"{t:.2f}",
+            ha="center", va="bottom", fontsize=7.5, color=INK,
         )
-    ax.set_xticks(x)
-    ax.set_xticklabels([MODEL_LABELS[m] for m in models], fontsize=9)
     ci_top = max(test[m]["ci"]["ci_high"] for m in models)
-    ax.set_ylim(0, ci_top * 1.08)
-    ax.set_ylabel("WRMSSE (lower is better)")
-    ax.set_title("WRMSSE: validation vs frozen test")
-    ax.legend(fontsize=8, loc="upper right")
-    ax.text(
-        0.5, -0.16,
-        "light bars = validation, dark bars = test; "
-        "error bars = 95% item-cluster bootstrap CI on test",
-        transform=ax.transAxes, ha="center", fontsize=7, color="#444444",
-    )
+    a1.set_ylim(0, ci_top * 1.12)
+    style(a1, "a", "WRMSSE: validation vs frozen test",
+          ylabel="WRMSSE (lower is better)", xlabel="model")
+    cat(a1, "x", x, [MODEL_LABELS[m] for m in models])
+    a1.bar(x[0] - width / 2, 0, width, color=GRAY, alpha=0.4,
+           label="validation")
+    a1.bar(x[0] + width / 2, 0, width, color=GRAY, label="test")
+    a1.legend(loc="upper right")
 
-    # Panel 2: per-level WRMSSE for LightGBM vs seasonal naive on test.
-    best = min(test, key=lambda m: test[m]["wrmsse"])
-    ax = axes[0, 1]
-    series = [("lightgbm", "LightGBM"), ("seasonal_naive", "seasonal naive")]
-    width = 0.38
-    for j, (key, label) in enumerate(series):
-        per_level = test[key]["per_level"]
+    # (b) Per-level test WRMSSE for all four models.
+    width = 0.2
+    for j, m in enumerate(models):
+        per_level = test[m]["per_level"]
         vals = [per_level.get(lv, np.nan) for lv in LEVEL_ORDER]
-        ax.bar(
-            np.arange(len(LEVEL_ORDER)) + (j - 0.5) * width, vals, width,
-            color=COLORS[key], label=label,
+        a2.bar(
+            np.arange(len(LEVEL_ORDER)) + (j - (len(models) - 1) / 2) * width,
+            vals, width, color=MODEL_COLORS[m], label=MODEL_LABELS[m],
         )
-    ax.set_xticks(range(len(LEVEL_ORDER)))
-    ax.set_xticklabels([lv.replace("_x_", " x ") for lv in LEVEL_ORDER],
-                       rotation=90, ha="right", fontsize=7)
-    ax.set_ylabel("WRMSSE")
-    ax.set_title("Per-level WRMSSE on test: LightGBM vs seasonal naive")
-    ax.legend(fontsize=8)
+    vmax_b = max(
+        test[m]["per_level"].get(lv, 0.0) for m in models for lv in LEVEL_ORDER
+    )
+    a2.set_ylim(0, vmax_b * 1.42)
+    style(a2, "b", "Per-level WRMSSE on test (12 aggregation levels)",
+          ylabel="WRMSSE")
+    cat(a2, "x", range(len(LEVEL_ORDER)), LEVEL_LABELS,
+        rotation=75, ha="right", fontsize=7)
+    a2.legend(loc="upper left")
 
-    # Panel 3: aggregate-level RMSSE comparison.
-    ax = axes[1, 0]
+    # (c) Aggregate RMSSE by state for SARIMA/Prophet/LightGBM bottom-up.
+    agg_state = metrics.get("aggregate_test", {}).get("state", {})
+    states = ["CA", "TX", "WI"]
+    xs = np.arange(len(states))
+    width = 0.26
+    for j, meth in enumerate(AGG_METHODS):
+        vals = [
+            agg_state.get(meth, {}).get("rmsse_per_series", {}).get(st, np.nan)
+            for st in states
+        ]
+        a3.bar(xs + (j - 1) * width, vals, width,
+               color=AGG_COLORS[j], label=AGG_LABELS[j])
+    vmax_c = max(
+        agg_state.get(meth, {}).get("rmsse_per_series", {}).get(st, 0.0)
+        for meth in AGG_METHODS for st in states
+    )
+    a3.set_ylim(0, vmax_c * 1.38)
+    style(a3, "c", "Aggregate RMSSE by state (test)",
+          ylabel="RMSSE (lower is better)", xlabel="state")
+    cat(a3, "x", xs, states)
+    a3.legend(loc="upper left")
+
+    # (d) Aggregate-level mean RMSSE comparison (kept panel).
     agg = metrics.get("aggregate_test", {})
-    methods = ["sarima", "prophet", "lightgbm_bottomup"]
-    method_labels = ["SARIMA", "Prophet", "LightGBM\nbottom-up"]
-    if agg:
-        levels = list(agg.keys())
-        x = np.arange(len(levels))
-        width = 0.26
-        for j, meth in enumerate(methods):
-            vals = [agg[lv].get(meth, {}).get("rmsse_mean", np.nan)
-                    for lv in levels]
-            ax.bar(x + (j - 1) * width, vals, width,
-                   color=COLORS[meth], label=method_labels[j])
-        ax.set_xticks(x)
-        ax.set_xticklabels(levels, fontsize=9)
-        ax.set_ylabel("mean RMSSE (lower is better)")
-        ax.set_title(
-            "Aggregate series RMSSE (test)\n"
-            "SARIMA vs Prophet vs LightGBM bottom-up",
-            fontsize=11,
-        )
-        ax.legend(fontsize=8)
-    else:
-        ax.text(0.5, 0.5, "aggregate results not present",
-                ha="center", va="center", transform=ax.transAxes)
-        ax.set_title("Aggregate series comparison")
+    levels = [lv for lv in ("total", "state", "store") if lv in agg]
+    xl = np.arange(len(levels))
+    for j, meth in enumerate(AGG_METHODS):
+        vals = [
+            agg[lv].get(meth, {}).get("rmsse_mean", np.nan) for lv in levels
+        ]
+        a4.bar(xl + (j - 1) * width, vals, width,
+               color=AGG_COLORS[j], label=AGG_LABELS[j])
+    vmax_d = max(
+        agg[lv].get(meth, {}).get("rmsse_mean", 0.0)
+        for lv in levels for meth in AGG_METHODS
+    )
+    a4.set_ylim(0, vmax_d * 1.38)
+    style(a4, "d", "Aggregate mean RMSSE by level (test)",
+          ylabel="mean RMSSE", xlabel="aggregation level")
+    cat(a4, "x", xl, [lv.capitalize() for lv in levels])
+    a4.legend(loc="upper left")
 
-    # Panel 4: LightGBM per-seed WRMSSE spread vs the seed-mean forecast.
-    ax = axes[1, 1]
+    # (e) LightGBM per-seed test WRMSSE spread.
     seeds = test.get("lightgbm", {}).get("per_seed", [])
     if seeds:
-        xs = [s["seed"] for s in seeds]
-        ys = [s["wrmsse"] for s in seeds]
-        ax.plot(xs, ys, "o", color=COLORS["lightgbm"])
-        for xv, yv in zip(xs, ys, strict=True):
-            ax.text(xv, yv, f"{yv:.3f}", ha="center", va="bottom",
-                    fontsize=8)
+        sxs = [s["seed"] for s in seeds]
+        sys_ = [s["wrmsse"] for s in seeds]
+        a5.plot(sxs, sys_, "o", color=BLUE, ms=6)
         mean_val = float(test["lightgbm"]["wrmsse"])
-        ax.axhline(mean_val, color="#555555", ls="--", lw=1)
-        ax.annotate(
-            f"seed-averaged forecast {mean_val:.3f}",
-            xy=(xs[0] - 0.15, mean_val),
-            xytext=(0, 4),
+        a5.axhline(mean_val, color=INK, ls="--", lw=1.0)
+        a5.annotate(
+            f"seed-averaged forecast {mean_val:.2f}",
+            xy=(min(sxs), mean_val),
+            xytext=(4, 0),
             textcoords="offset points",
-            va="bottom",
-            ha="left",
+            va="center",
             fontsize=8,
-            color="#555555",
+            color=TICK_LABEL,
         )
-        ax.set_xlim(min(xs) - 0.5, max(xs) + 0.5)
-        ax.margins(y=0.3)
-        ax.set_xlabel("seed")
-        ax.set_ylabel("test WRMSSE (single-seed forecast)")
-        ax.set_title("LightGBM per-seed WRMSSE (test)")
-        ax.set_xticks(xs)
+        for xv, yv in zip(sxs, sys_, strict=True):
+            a5.text(xv, yv, f"{yv:.2f}", ha="center", va="bottom",
+                    fontsize=7.5, color=INK)
+        a5.set_xlim(min(sxs) - 0.6, max(sxs) + 0.6)
+        a5.margins(y=0.35)
+        a5.set_xticks(sxs)
+        style(a5, "e", "LightGBM per-seed WRMSSE (test)",
+              xlabel="seed", ylabel="test WRMSSE")
     else:
-        ax.text(0.5, 0.5, "seed data not present",
-                ha="center", va="center", transform=ax.transAxes)
-        ax.set_title("LightGBM per-seed WRMSSE")
+        a5.text(0.5, 0.5, "seed data not present",
+                ha="center", va="center", transform=a5.transAxes)
+        style(a5, "e", "LightGBM per-seed WRMSSE", grid=False)
 
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
-    out = REPO / "image.png"
-    fig.savefig(out, dpi=150)
-    print(f"wrote {out}")
-
-    provenance = {
-        "source": "results/metrics.json",
-        "protocol": metrics["protocol"],
-        "run": RUN_LABEL,
-        "git_sha": _git_sha(),
-        "models_plotted": models,
-        "best_test_model": best,
-        "levels": LEVEL_ORDER,
-    }
-    (REPO / "scripts" / "figure-data.json").write_text(
-        json.dumps(provenance, indent=2) + "\n"
-    )
+    finish(fig, OUT)
 
 
 if __name__ == "__main__":
