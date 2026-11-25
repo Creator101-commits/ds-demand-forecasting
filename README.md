@@ -1,5 +1,7 @@
 # DS Demand Forecasting
 
+> Retail demand forecasting on the M5 dataset: LightGBM scores 0.62 WRMSSE against 0.85 for seasonal naive.
+
 Can a modern forecaster beat the M5 competition's own baselines on the
 hidden test week? This project reruns the Kaggle M5 benchmark end to
 end: official WRMSSE scoring, a frozen train/validation/test protocol,
