@@ -1,6 +1,6 @@
 # DS Demand Forecasting
 
-> Retail demand forecasting on the M5 dataset: LightGBM scores 0.62 WRMSSE against 0.85 for seasonal naive.
+> Retail demand forecasting
 
 Can a modern forecaster beat the M5 competition's own baselines on the
 hidden test week? This project reruns the Kaggle M5 benchmark end to
@@ -60,6 +60,11 @@ load 3 competition CSVs + verify 5 official files (sha256)
 Validation picks the LightGBM config; `analysis_plan.json` is written
 before the private test truth is read (`ordering_ok` in the manifest).
 
+Disclosure: v2.1 reran the model after v2's test numbers had been seen;
+the justification was a validation-only diagnostic (training hit the
+round cap before early stopping could fire), not the test outcome. v2
+scored 0.6188 vs v2.1's 0.6211, inside overlapping CIs.
+
 ## Run it
 
 ```bash
@@ -72,21 +77,3 @@ uv run mypy src
 scripts/kaggle_run.sh --smoke
 scripts/kaggle_run.sh
 ```
-
-## Notes
-
-- Disclosure: v2.1 reran the model after v2's test numbers had been
-  seen; the justification was a validation-only diagnostic (training
-  hit the round cap before early stopping could fire), not the test
-  outcome. v2 scored 0.6188 vs v2.1's 0.6211, inside overlapping CIs.
-- The inventory scenario is an illustration under declared costs
-  (critical fractile 0.8, underage = price, overage = 0.25 x price),
-  not a measured saving.
-- Bootstrap intervals are population-sensitivity bands, not temporal
-  uncertainty: replicates sit right-skewed above the point estimate
-  (mean 0.6368 vs 0.6211) because item clusters move together.
-- Data: Kaggle `m5-forecasting-accuracy` plus the private sha256-pinned
-  `m5-official-evaluation` dataset; nothing is committed.
-- Protocol `m5-benchmark-v2`, seed 42, LightGBM seeds {0,1,2}, 500
-  bootstrap replicates seed 0. Curated output is in `results/` and
-  `image.png` renders from it.
